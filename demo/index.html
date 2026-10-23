@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f4f3ef">
+  <meta name="description" content="tinyPano.js — a small, dependency-free panorama viewer. Smooth on modern browsers, useful on older ones, and yours to build with.">
+  <title>tinyPano.js — Panorama viewer demo</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23252723'/%3E%3Cpath d='M7 19l6-8 5 6 3-4 5 8H7z' fill='%23d7edac'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="../dist/tinyPano.min.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="header shell">
+    <a class="wordmark" href="./" aria-label="tinyPano.js home"><span class="mark" aria-hidden="true"><svg viewBox="0 0 26 26"><path d="M3 18 10 8l6 8 4-5 5 9H3Z"/></svg></span>tinyPano<span class="wordmark-js">.js</span></a>
+    <div class="header-links"><a class="text-link" href="../generator/">Tour generator <span aria-hidden="true">↗</span></a><a class="text-link" href="../README.md" target="_blank" rel="noopener">Docs <span aria-hidden="true">↗</span></a></div>
+  </header>
+
+  <main class="shell">
+    <section class="intro" aria-labelledby="headline">
+      <div><p class="eyebrow">JAVASCRIPT PANORAMA VIEWER</p><h1 id="headline">360° panoramas<br>for the web.</h1></div>
+      <div class="intro-copy"><p>Explore the Weltenburg panorama, try the controls,<br>or open a photo from your device.</p><a class="intro-anchor" href="#get-started">Embed a panorama <span aria-hidden="true">↓</span></a></div>
+    </section>
+
+    <section aria-label="Interactive panorama demo">
+      <div class="viewer-card" id="drop-zone">
+        <div id="pano" aria-label="Kloster Weltenburg panorama"></div>
+        <div class="viewer-top"><span class="image-tag"><span class="live-dot"></span><span id="image-tag">360° WELTENBURG PANORAMA</span></span><button class="glass-button" id="fullscreen" type="button" aria-label="Toggle full screen" title="Full screen"><svg aria-hidden="true" viewBox="0 0 20 20"><path d="M7 3H3v4m10-4h4v4M3 13v4h4m10-4v4h-4"/></svg></button></div>
+        <div class="loading-state" id="loading-state" role="status"><span class="spinner" aria-hidden="true"></span><span id="loading-message">Opening the view…</span></div>
+        <div class="viewer-bottom"><div><span class="scene-eyebrow" id="scene-eyebrow">01 / KLOSTER WELTENBURG</span><h2 id="scene-title">Kloster Weltenburg</h2><p id="scene-description">Weltenburg Abbey and the Danube, Bavaria.</p><p id="photo-credit" class="photo-credit"><a href="https://commons.wikimedia.org/wiki/File:Kloster_Weltenburg_Panorama.jpg" target="_blank" rel="noopener noreferrer">Photo: Simon Waldherr</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/" target="_blank" rel="noopener noreferrer">CC BY-SA 4.0</a> · resized</p></div><span class="drag-hint"><svg aria-hidden="true" viewBox="0 0 20 20"><path d="m6 4-3 3 3 3M3 7h10a4 4 0 0 1 4 4m-3 5 3-3-3-3m3 3H7a4 4 0 0 1-4-4"/></svg>Drag to explore <span>·</span> Scroll to zoom</span></div>
+        <div class="drop-overlay" id="drop-overlay" aria-hidden="true"><span>Drop a panorama here</span><small>Local images stay on your device.</small></div>
+      </div>
+
+      <div class="viewer-toolbar">
+        <div class="scene-options" role="group" aria-label="Choose a scene"><button class="scene-button is-active" type="button" data-scene="weltenburg" aria-pressed="true"><span class="scene-thumb thumb-abbey" aria-hidden="true"></span><span>Weltenburg</span></button><button class="scene-button" type="button" data-scene="danube" aria-pressed="false"><span class="scene-thumb thumb-danube" aria-hidden="true"></span><span>Danube gorge</span></button></div>
+        <div class="viewer-options"><div class="zoom-buttons" role="group" aria-label="Zoom"><button class="utility-button zoom-button" id="zoom-in" type="button" aria-label="Zoom in" title="Zoom in" disabled>+</button><button class="utility-button zoom-button" id="zoom-out" type="button" aria-label="Zoom out" title="Zoom out" disabled>−</button></div><button class="utility-button" id="share" type="button" aria-label="Share this view" aria-controls="share-fallback" aria-expanded="false" aria-busy="false" disabled><svg aria-hidden="true" viewBox="0 0 20 20"><path d="m8 12 4-4m-6 2-2 2a3 3 0 0 0 4 4l2-2m0-8 2-2a3 3 0 0 1 4 4l-2 2"/></svg><span>Share view</span></button><button class="utility-button" id="gyro" type="button" aria-label="Toggle gyroscope" aria-pressed="false" hidden><svg aria-hidden="true" viewBox="0 0 20 20"><rect x="5" y="2" width="10" height="16" rx="2"/><path d="M8 15h4m-9-9L1 9l2 3m14-6 2 3-2 3"/></svg><span>Gyroscope</span></button><button class="utility-button" id="rotate" type="button" aria-pressed="false"><svg aria-hidden="true" viewBox="0 0 20 20"><path d="M16.7 7A7 7 0 1 0 17 12M17 3v5h-5"/></svg><span>Auto rotate</span></button><span class="toolbar-divider" aria-hidden="true"></span><label class="renderer-label" for="renderer">Renderer</label><select id="renderer" aria-label="Rendering backend"><option value="auto">Auto (GPU)</option><option value="canvas">Canvas 2D</option></select></div>
+      </div>
+
+      <div class="highlights" id="highlights" role="group" aria-label="Panorama highlights"></div>
+
+      <div class="viewer-meta"><div class="runtime"><span class="status-dot" id="status-dot"></span><span id="renderer-stat">CONNECTING</span><span class="meta-divider">/</span><span id="resolution-stat">3840 × 1920</span><span class="meta-divider">/</span><span id="camera-stat">100° FOV</span><span class="activity-stat"><span class="meta-divider">/</span> <span id="activity-stat">READY</span></span></div><label class="upload-link" for="panorama-file">Try your own panorama <span aria-hidden="true">↗</span></label><input type="file" id="panorama-file" accept="image/*" class="file-input" aria-label="Open a local panorama image"></div>
+      <p id="interaction-help" class="visually-hidden">Drag to look around, pinch or scroll to zoom. Focus the panorama to use the arrow keys and plus or minus keys. Escape exits full screen.</p>
+      <p class="notice" id="notice" role="status" aria-live="polite"></p>
+      <div id="share-fallback" class="share-fallback" role="group" aria-label="Share the view by link" hidden>
+        <label for="share-url">Link to this panorama view</label>
+        <input id="share-url" class="share-url" type="url" readonly hidden aria-describedby="share-instructions">
+        <p id="share-instructions">Select and copy the link. Press Escape to close.</p>
+        <button id="share-dismiss" class="utility-button" type="button">Close</button>
+      </div>
+    </section>
+
+    <section class="details" id="get-started" aria-labelledby="get-started-title">
+      <div class="details-copy"><p class="eyebrow">GET STARTED</p><h2 id="get-started-title">Embed a panorama.</h2><p>Add the viewer script and stylesheet, then point<br class="desktop-break"> it at your panorama. Serve the files over HTTP(S).</p><div class="feature-tags"><span>WebGL + Canvas fallback</span><span>Touch & keyboard</span><span>Works offline</span></div></div>
+      <div class="code-card"><div class="code-top"><span><span class="code-dot"></span>index.html</span><button id="copy-code" class="copy-button" type="button" aria-label="Copy setup code">Copy <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="5" width="8" height="9" rx="1"/><path d="M10 5V2H2v9h3"/></svg></button></div><pre><code id="setup-code"><span class="syntax-tag">&lt;link</span> <span class="syntax-attr">rel</span>=<span class="syntax-string">"stylesheet"</span> <span class="syntax-attr">href</span>=<span class="syntax-string">"tinyPano.min.css"</span><span class="syntax-tag">&gt;</span>
+<span class="syntax-tag">&lt;script</span> <span class="syntax-attr">src</span>=<span class="syntax-string">"tinyPano.min.js"</span><span class="syntax-tag">&gt;&lt;/script&gt;</span>
+
+<span class="syntax-tag">&lt;div</span> <span class="syntax-attr">id</span>=<span class="syntax-string">"view"</span> <span class="syntax-attr">style</span>=<span class="syntax-string">"height: 480px"</span><span class="syntax-tag">&gt;&lt;/div&gt;</span>
+
+<span class="syntax-tag">&lt;script&gt;</span>
+  <span class="syntax-call">tinyPano.viewer</span>(<span class="syntax-string">'view'</span>, {
+    <span class="syntax-attr">panorama</span>: <span class="syntax-string">'your-panorama.jpg'</span>,
+    <span class="syntax-attr">autoLoad</span>: <span class="syntax-number">true</span>,
+    <span class="syntax-attr">hfov</span>: <span class="syntax-number">100</span>
+  });
+<span class="syntax-tag">&lt;/script&gt;</span></code></pre></div>
+    </section>
+
+    <footer class="footer"><span>tinyPano.js <span class="footer-dot">·</span> MIT licensed</span><span>Weltenburg panorama <span class="footer-dot">·</span> Demo image included</span></footer>
+  </main>
+  <script src="../dist/tinyPano.min.js"></script>
+  <script src="demo.js"></script>
+</body>
+</html>

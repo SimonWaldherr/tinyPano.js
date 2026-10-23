@@ -1,0 +1,60 @@
+{
+  "name": "tinypano",
+  "version": "0.1.0",
+  "description": "A dependency-free, on-demand WebGL panorama viewer with a perspective-correct Canvas fallback.",
+  "homepage": "https://github.com/SimonWaldherr/tinyPano.js#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SimonWaldherr/tinyPano.js.git"
+  },
+  "bugs": {
+    "url": "https://github.com/SimonWaldherr/tinyPano.js/issues"
+  },
+  "main": "dist/tinyPano.js",
+  "module": "dist/tinyPano.mjs",
+  "types": "dist/tinyPano.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/tinyPano.d.ts",
+      "import": "./dist/tinyPano.mjs",
+      "require": "./dist/tinyPano.js"
+    },
+    "./style.css": "./dist/tinyPano.css",
+    "./dist/*": "./dist/*"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "node scripts/build.cjs",
+    "test:node": "node --test tests/*.test.cjs",
+    "test:browser": "node scripts/test-browser.cjs",
+    "test:package": "node scripts/check-package.cjs",
+    "test": "npm run build && npm run test:node && npm run test:browser",
+    "release:check": "npm test && npm run test:package",
+    "release:prepare": "node scripts/prepare-release.cjs",
+    "demo": "node scripts/serve.cjs",
+    "prepack": "npm run build"
+  },
+  "keywords": [
+    "panorama",
+    "360",
+    "webgl",
+    "canvas",
+    "viewer"
+  ],
+  "author": "Simon Waldherr",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "type": "commonjs",
+  "devDependencies": {
+    "acorn": "8.15.0",
+    "playwright": "1.58.2",
+    "terser": "5.51.2",
+    "typescript": "5.9.3"
+  }
+}
