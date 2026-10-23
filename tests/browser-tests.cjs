@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const fixture = '<!doctype html><html><head><link rel="stylesheet" href="/dist/tinyPano.css"></head>' +
+const fixture = '<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="/dist/tinyPano.css"></head>' +
   '<body><div id="pano" style="width:640px;height:320px"></div><script src="/dist/tinyPano.min.js"></script></body></html>';
 
 async function startViewer(page, renderer, scenes) {
@@ -188,7 +188,14 @@ cases.push({
     const source = path.resolve(__dirname, '../demo/assets/Kloster_Weltenburg_Panorama.jpg');
     await page.locator('#panorama-files').setInputFiles(source);
     await page.waitForFunction(() => document.getElementById('scene-count').textContent === '1' && !document.getElementById('export-tour').disabled && document.getElementById('viewer-status').hidden);
+    const thumbnail = await page.locator('#scene-list img').evaluate(async image => {
+      await image.decode();
+      return { width: image.naturalWidth, height: image.naturalHeight, src: image.getAttribute('src') };
+    });
+    assert.ok(thumbnail.width > 0 && thumbnail.width <= 192 && thumbnail.height <= 192);
+    assert.match(thumbnail.src, /^data:image\/jpeg/);
     await page.locator('#tour-title').fill('Test tour');
+    await page.locator('#tour-language').selectOption('en');
     await page.locator('#scene-title').fill('Test panorama');
     await page.locator('#hotspot-text').fill('Tour note');
     await page.locator('#add-text').click();
@@ -199,11 +206,14 @@ cases.push({
     for await (const chunk of await projectDownload.createReadStream()) projectChunks.push(chunk);
     const projectBuffer = Buffer.concat(projectChunks);
     const project = JSON.parse(projectBuffer.toString('utf8'));
+    assert.equal(project.language, 'en');
+    assert.equal(project.scenes[0].thumbnail, undefined, 'Derived thumbnails should not inflate project files');
     assert.equal(project.scenes[0].hotSpots[0].text, 'Tour note');
     await page.locator('#tour-title').fill('Unsaved title');
     page.once('dialog', dialog => dialog.accept());
     await page.locator('#project-file').setInputFiles({ name: 'tour.tinypano.json', mimeType: 'application/json', buffer: projectBuffer });
     await page.waitForFunction(() => document.getElementById('tour-title').value === 'Test tour' && !document.getElementById('export-tour').disabled && document.getElementById('viewer-status').hidden);
+    assert.equal(await page.locator('#tour-language').inputValue(), 'en');
     assert.equal(await page.locator('#hotspot-list li').count(), 1);
     const downloadPromise = page.waitForEvent('download');
     await page.locator('#export-tour').click();
@@ -216,6 +226,9 @@ cases.push({
     for (const name of ['index.html', 'tour.css', 'tour.js', 'tour-data.js', 'tour.json', 'tinyPano.min.js', 'tinyPano.min.css', 'LICENSE.txt', 'README.txt']) assert.ok(entries.has(name), name + ' missing from ZIP');
     const tour = JSON.parse(entries.get('tour.json').toString('utf8'));
     assert.equal(tour.title, 'Test tour');
+    assert.equal(tour.language, 'en');
+    assert.match(entries.get('index.html').toString('utf8'), /<html lang="en">/);
+    assert.match(entries.get('README.txt').toString('utf8'), /Upload all extracted files/);
     const scene = tour.scenes[tour.firstScene];
     assert.equal(scene.title, 'Test panorama');
     assert.equal(scene.hotSpots[0].text, 'Tour note');
@@ -231,7 +244,17 @@ cases.push({
     assert.equal(await page.title(), 'Test tour');
     assert.equal(await page.locator('#scene-title').textContent(), 'Test panorama');
     assert.equal(await page.locator('[data-hotspot-id]').count(), 1);
+    assert.equal(await page.locator('#share').textContent(), 'Share view');
+    assert.equal(await page.locator('.tp-controls button').first().getAttribute('aria-label'), 'Zoom in');
+    // The same exported runtime must also localize German tours and accessibility labels.
+    tour.language = 'de';
+    entries.set('tour-data.js', Buffer.from('window.tinyPanoTourData = ' + JSON.stringify(tour) + ';'));
+    await page.reload();
+    await page.waitForFunction(() => !document.getElementById('share').disabled);
+    assert.equal(await page.locator('#share').textContent(), 'Ansicht teilen');
+    assert.equal(await page.locator('html').getAttribute('lang'), 'de');
+    assert.equal(await page.locator('#share-fallback').getAttribute('aria-label'), 'Ansicht per Link teilen');
   }
 });
 
-module.exports = { fixture, cases };
+module.exports = { fixture, cases, storedZipEntries };

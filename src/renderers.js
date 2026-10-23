@@ -65,12 +65,13 @@ function tpReleaseSources(sources, originals) {
     }
 }
 
-function tpPrepareSources(images, config, limit, doc) {
+function tpPrepareSources(images, config, limit, doc, readPixels) {
     var cube = config.type === 'cubemap';
     var count = cube ? 6 : 1;
     if (!images || images.length !== count) { throw new Error(cube ? 'Cubemap requires six images.' : 'Equirectangular panorama requires one image.'); }
     var sizes = [];
     var sources = [];
+    var buffers = [];
     var cubeSize = limit;
     var downscaled = false;
     var i, size, width, height, source, context;
@@ -88,7 +89,7 @@ function tpPrepareSources(images, config, limit, doc) {
                 width = Math.max(1, Math.floor(size.width * scale));
                 height = Math.max(1, Math.floor(size.height * scale));
             }
-            source = width !== size.width || height !== size.height ? doc.createElement('canvas') : images[i];
+            source = readPixels || width !== size.width || height !== size.height ? doc.createElement('canvas') : images[i];
             sources.push(source);
             if (source !== images[i]) {
                 source.width = width;
@@ -97,13 +98,17 @@ function tpPrepareSources(images, config, limit, doc) {
                 if (!context) { throw new Error('Cannot resize panorama image.'); }
                 context.drawImage(images[i], 0, 0, width, height);
                 if (width < size.width || height < size.height) { downscaled = true; }
+                if (readPixels) {
+                    buffers.push({ data: context.getImageData(0, 0, width, height).data, width: width, height: height });
+                    source.width = source.height = 1;
+                }
             }
         }
     } catch (error) {
         tpReleaseSources(sources, images);
         throw error;
     }
-    return { sources: sources, textureWidth: width, textureHeight: height, downscaled: downscaled };
+    return { sources: sources, buffers: buffers, textureWidth: width, textureHeight: height, downscaled: downscaled };
 }
 
 function tpBackground(config) {
@@ -573,30 +578,12 @@ function tpCanvasRenderer(canvas, options) {
                 var highest = manifest.levels[manifest.levels.length - 1];
                 return { textureWidth: highest.width, textureHeight: highest.height, downscaled: false, tiled: true };
             }
-            var prepared = tpPrepareSources(images, config, limit, doc);
-            var next = [];
-            /* Pixel extraction happens once. If CORS disallows it, keep the old buffers. */
-            var copy;
-            try {
-                for (var i = 0; i < prepared.sources.length; i++) {
-                    var size = tpSourceSize(prepared.sources[i]);
-                    copy = doc.createElement('canvas');
-                    copy.width = size.width;
-                    copy.height = size.height;
-                    var copyContext = copy.getContext('2d');
-                    if (!copyContext) { throw new Error('Cannot read panorama pixels.'); }
-                    copyContext.drawImage(prepared.sources[i], 0, 0);
-                    next.push({ data: copyContext.getImageData(0, 0, size.width, size.height).data, width: size.width, height: size.height });
-                    copy.width = copy.height = 1;
-                    copy = null;
-                }
-            } finally {
-                if (copy) copy.width = copy.height = 1;
-                tpReleaseSources(prepared.sources, images);
-            }
+            // Resize and extract each face in one temporary canvas. Commit only
+            // after every read succeeds, keeping the previous scene on CORS errors.
+            var prepared = tpPrepareSources(images, config, limit, doc, true);
             tileGeneration++;
             clearTiles(state && state.multi);
-            buffers = next;
+            buffers = prepared.buffers;
             state = {
                 cube: config.type === 'cubemap',
                 projection: tpProjection(config),

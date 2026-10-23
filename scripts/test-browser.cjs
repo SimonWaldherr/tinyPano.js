@@ -5,6 +5,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { chromium } = require('playwright');
 const tests = require('../tests/browser-tests.cjs');
+const commons = require('../tests/commons.test-browser.cjs');
+const memoryAndI18n = require('../tests/memory-i18n.test-browser.cjs');
 
 const root = path.resolve(__dirname, '..');
 const mime = { '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css', '.html': 'text/html', '.png': 'image/png', '.jpg': 'image/jpeg' };
@@ -34,7 +36,7 @@ function serve(request, response) {
 
 async function main() {
   const filter = process.env.TEST_FILTER ? new RegExp(process.env.TEST_FILTER, 'i') : null;
-  const selected = tests.cases.filter(test => !filter || filter.test(test.name));
+  const selected = tests.cases.concat(memoryAndI18n.cases, commons.cases).filter(test => !filter || filter.test(test.name));
   if (!selected.length) throw new Error('No browser tests match TEST_FILTER.');
   const server = http.createServer(serve);
   await new Promise((resolve, reject) => {

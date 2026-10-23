@@ -3,6 +3,10 @@ var RAD = Math.PI / 180;
 var HOTSPOT_ID = 0;
 var own = Object.prototype.hasOwnProperty;
 function tpIsBlob(value) { return !!(value && typeof value.size === 'number' && typeof value.slice === 'function'); }
+function tpCancelImage(image) {
+    image.onload = image.onerror = null;
+    if (image.removeAttribute) image.removeAttribute('src');
+}
 function extend(out) {
     for (var i = 1; i < arguments.length; i++) {
         var from = arguments[i] || {};
@@ -122,6 +126,21 @@ var germanStrings = {
     invalidView: 'Die gespeicherte Panoramaansicht ist ungültig.',
     compass: 'Kompass', north: 'N', east: 'O', south: 'S', west: 'W'
 };
+function tpLanguage(language, doc, win) {
+    if (!language || language === 'auto') {
+        var navigator = win && win.navigator;
+        language = (doc && doc.documentElement.lang) || (navigator && ((navigator.languages && navigator.languages[0]) || navigator.language)) || 'en';
+    }
+    return String(language).toLowerCase().split(/[-_]/)[0] === 'de' ? 'de' : 'en';
+}
+function tpLocaleStrings(language) {
+    var strings = extend({}, language);
+    for (var i = 1; i < arguments.length; i++) {
+        var overrides = arguments[i] || {};
+        for (var key in language) if (own.call(overrides, key) && typeof overrides[key] === 'string') strings[key] = overrides[key];
+    }
+    return strings;
+}
 var defaults = {
     type: 'equirectangular', yaw: 0, pitch: 0, hfov: 100,
     minHfov: 30, maxHfov: 120, minPitch: -90, maxPitch: 90,
@@ -131,7 +150,7 @@ var defaults = {
     crossOrigin: 'anonymous', maxDpr: 2, maxPixels: 2560000,
     renderer: 'auto', haov: 360, vaov: 180, hOffset: 0, vOffset: 0, horizonCorrection: 0,
     backgroundColor: [0, 0, 0], compass: false, northOffset: null,
-    maxPreloadedScenes: 2
+    maxPreloadedScenes: 2, maxPreloadBytes: 67108864
 };
 
 function Viewer(target, options) {
@@ -145,6 +164,7 @@ function Viewer(target, options) {
     this.host = target;
     this.base = extend({}, options);
     this.scenes = extend(Object.create(null), this.base.scenes);
+    delete this.base.scenes;
     this.events = Object.create(null);
     this.listeners = [];
     this.pendingImages = [];
@@ -155,7 +175,9 @@ function Viewer(target, options) {
     this.preloadRequests = Object.create(null);
     this.preloadWaiter = null;
     this.preloadSequence = 0;
-    this.preloadLimit = Math.floor(clamp(finite(this.base.maxPreloadedScenes, defaults.maxPreloadedScenes), 1, 8));
+    this.preloadLimit = Math.floor(clamp(finite(this.base.maxPreloadedScenes, defaults.maxPreloadedScenes), 0, 8));
+    this.preloadBudget = Math.max(0, finite(this.base.maxPreloadBytes, defaults.maxPreloadBytes));
+    this.preloadedBytes = 0;
     this.hotspots = [];
     this.frame = 0;
     this.frames = 0;
@@ -208,7 +230,9 @@ function Viewer(target, options) {
     if (!first) for (var id in this.scenes) if (own.call(this.scenes, id)) { first = id; break; }
     this.scene = first || null;
     this._configure(first ? this.scenes[first] : {});
-    this.rendererOptions = extend({}, this.config);
+    this.rendererOptions = {};
+    var renderKeys = ['renderer', 'type', 'maxTextureSize', 'maxDpr', 'maxPixels', 'fallbackWidth'];
+    for (var ri = 0; ri < renderKeys.length; ri++) this.rendererOptions[renderKeys[ri]] = this.config[renderKeys[ri]];
     this.requested = { sceneId: this.scene, config: this.config };
     this.resize();
     // Always defer initial I/O, so callers can attach load/error handlers first.
@@ -268,21 +292,18 @@ Viewer.prototype._resolveConfig = function (scene) {
     if (c.type === 'cylindrical' && !hasVaov) c.vaov = 160;
     if (c.type === 'cylindrical') c.vaov = clamp(c.vaov, 1, 170);
     c.northOffset = typeof c.northOffset === 'number' && isFinite(c.northOffset) ? bearing(c.northOffset) : null;
-    var language = c.language === 'de' ? germanStrings : englishStrings;
-    c.strings = extend({}, language, this.base.default && this.base.default.strings, this.base.strings, scene && scene.strings);
-    for (var key in language) if (own.call(language, key) && typeof c.strings[key] !== 'string') c.strings[key] = language[key];
+    return this._localizeConfig(c, scene);
+};
+Viewer.prototype._localizeConfig = function (c, scene) {
+    c.language = tpLanguage(this.languageOverride === undefined ? c.language : this.languageOverride, this.doc, this.win);
+    c.strings = tpLocaleStrings(c.language === 'de' ? germanStrings : englishStrings,
+        this.base.default && this.base.default.strings, this.base.strings, scene && scene.strings, this.stringOverrides);
     return c;
 };
-Viewer.prototype._configure = function (scene, resolved) {
-    var self = this;
-    var c = this.config = resolved ? scene : this._resolveConfig(scene);
-    this.compassAngle = this.compassLabel = null;
-    this.view.yaw = finite(c.yaw, 0); this.view.pitch = finite(c.pitch, 0); this.view.hfov = finite(c.hfov, 100);
-    this._limit();
-    this.gyroReference = null;
-    this.caption.textContent = (c.title || '') + (c.author ? ' · ' + c.author : '');
-    this.root.setAttribute('aria-label', c.title ? String(c.title) : c.strings.interactivePanorama);
-    if (c.autoLoad === false) this.root.setAttribute('aria-busy', 'false');
+Viewer.prototype._configureControls = function () {
+    var self = this, c = this.config;
+    var focused = this.controls.contains(this.doc.activeElement);
+    var index = Array.prototype.indexOf.call(this.controls.children, this.doc.activeElement);
     this.controls.textContent = '';
     this.zoomInButton = this.zoomOutButton = null;
     this.gyroscopeButton = null;
@@ -303,17 +324,69 @@ Viewer.prototype._configure = function (scene, resolved) {
             this._updateGyroscopeButton();
         }
     }
+    if (focused && this.controls.children[index]) {
+        try { this.controls.children[index].focus({ preventScroll: true }); }
+        catch (_) { this.controls.children[index].focus(); }
+    }
+};
+Viewer.prototype._configure = function (scene, resolved) {
+    var self = this;
+    var c = this.config = resolved ? scene : this._resolveConfig(scene);
+    this.compassAngle = this.compassLabel = null;
+    this.view.yaw = finite(c.yaw, 0); this.view.pitch = finite(c.pitch, 0); this.view.hfov = finite(c.hfov, 100);
+    this._limit();
+    this.gyroReference = null;
+    this.caption.textContent = (c.title || '') + (c.author ? ' · ' + c.author : '');
+    this.root.setAttribute('aria-label', c.title ? String(c.title) : c.strings.interactivePanorama);
+    this.root.setAttribute('lang', c.language);
+    if (c.autoLoad === false) this.root.setAttribute('aria-busy', 'false');
+    this._configureControls();
     this.root.style.touchAction = c.draggable !== false ? 'none' : 'auto';
     this._clearHotspots();
     var spots = c.hotSpots || [];
     for (var i = 0; i < spots.length; i++) this._createHotspot(spots[i]);
     this.status.textContent = '';
+    this.displayError = null;
     if (c.autoLoad === false) {
         var b = this.doc.createElement('button'); b.type = 'button'; b.textContent = c.strings.loadPanorama;
         b.onclick = function () { self.load(); }; this.status.appendChild(b);
     }
     var reduceMotion = this.win.matchMedia && this.win.matchMedia('(prefers-reduced-motion: reduce)').matches;
     this._setAutoRotate(this.gyroEnabled || this.gyroPending || reduceMotion ? 0 : finite(c.autoRotate, 0));
+};
+Viewer.prototype.getLanguage = function () { return this.config.language || 'en'; };
+Viewer.prototype.setLanguage = function (language, strings) {
+    if (this.dead) return this;
+    this.languageOverride = language;
+    if (strings !== undefined) this.stringOverrides = strings;
+    this._localizeConfig(this.config, this.scenes[this.scene]);
+    if (this.requested && this.requested.config !== this.config) {
+        this._localizeConfig(this.requested.config, this.scenes[this.requested.sceneId]);
+    }
+    var c = this.config;
+    this.root.setAttribute('lang', c.language);
+    this.root.setAttribute('aria-label', c.title ? String(c.title) : c.strings.interactivePanorama);
+    this._configureControls();
+    for (var i = 0; i < this.hotspots.length; i++) {
+        var spot = this.hotspots[i];
+        if (spot.text) continue;
+        var text = spot.type === 'scene' ? c.strings.openScene : c.strings.information;
+        spot.el.setAttribute('aria-label', text);
+        spot.tooltip.textContent = text;
+        if (spot.label) spot.label.textContent = text;
+    }
+    var button = this.status.querySelector('button');
+    if (this.contextLost) this.status.textContent = c.strings.contextLost;
+    else if (this.displayError) {
+        var error = this.displayError;
+        this.displayError = this._makeError(error.code, c, error.cause, error.sceneId, error.requestId);
+        this.status.textContent = this.displayError.message;
+    } else if (button) button.textContent = c.strings.loadPanorama;
+    else if (this.loading && !this.images) this.status.textContent = this.requested.config.strings.loading;
+    this.compassAngle = this.compassLabel = null;
+    this._updateCompass(); this.resize(); this._request();
+    this._emit('languagechange', { language: c.language });
+    return this;
 };
 Viewer.prototype._limit = function () {
     var v = this.view, c = this.config;
@@ -478,12 +551,12 @@ Viewer.prototype._abortLoad = function () {
     this.generation++;
     this.loading = false;
     this.deferredCommit = null;
-    this._clearImageHandlers();
+    this._clearImageHandlers(true);
 };
-Viewer.prototype._clearImageHandlers = function () {
+Viewer.prototype._clearImageHandlers = function (cancel) {
     for (var i = 0; i < this.pendingImages.length; i++) {
         var img = this.pendingImages[i]; img.onload = img.onerror = null;
-        // Disconnect our callbacks. Clearing src may issue a request for the page in old browsers.
+        if (cancel && (!this.images || this.images.indexOf(img) === -1)) tpCancelImage(img);
     }
     this.pendingImages = [];
     for (i = 0; i < this.pendingReaders.length; i++) {
@@ -509,13 +582,28 @@ Viewer.prototype._cachedSceneImages = function (id, config, sources) {
     this.preloadOrder.push(id);
     return entry.images;
 };
+Viewer.prototype._dropCachedScene = function (id) {
+    var entry = this.preloadCache[id];
+    if (entry) this.preloadedBytes -= entry.bytes;
+    delete this.preloadCache[id];
+    for (var i = this.preloadOrder.length - 1; i >= 0; i--) if (this.preloadOrder[i] === id) this.preloadOrder.splice(i, 1);
+};
 Viewer.prototype._rememberPreloadedScene = function (record) {
-    this.preloadCache[record.sceneId] = record;
+    var bytes = 0;
+    for (var j = 0; j < record.images.length; j++) {
+        var size = tpSourceSize(record.images[j]);
+        bytes += size.width * size.height * 4;
+    }
+    this._dropCachedScene(record.sceneId);
+    if (!this.preloadLimit || bytes > this.preloadBudget) return;
+    this.preloadCache[record.sceneId] = { sceneId: record.sceneId, requestId: record.requestId,
+        type: record.type, basePath: record.basePath, crossOrigin: record.crossOrigin,
+        sources: record.sources, images: record.images, bytes: bytes };
+    this.preloadedBytes += bytes;
     for (var i = this.preloadOrder.length - 1; i >= 0; i--) if (this.preloadOrder[i] === record.sceneId) this.preloadOrder.splice(i, 1);
     this.preloadOrder.push(record.sceneId);
-    while (this.preloadOrder.length > this.preloadLimit) {
-        var expired = this.preloadOrder.shift();
-        delete this.preloadCache[expired];
+    while (this.preloadOrder.length > this.preloadLimit || this.preloadedBytes > this.preloadBudget) {
+        this._dropCachedScene(this.preloadOrder[0]);
     }
 };
 Viewer.prototype._cancelPreload = function (id) {
@@ -523,7 +611,8 @@ Viewer.prototype._cancelPreload = function (id) {
     if (!record) return;
     delete this.preloadRequests[id];
     record.cancelled = true;
-    for (var i = 0; i < record.pending.length; i++) record.pending[i].onload = record.pending[i].onerror = null;
+    for (var i = 0; i < record.pending.length; i++) tpCancelImage(record.pending[i]);
+    record.pending.length = 0;
     var URLApi = this.win.URL || this.win.webkitURL;
     if (URLApi && URLApi.revokeObjectURL) for (i = 0; i < record.objectURLs.length; i++) URLApi.revokeObjectURL(record.objectURLs[i]);
     record.objectURLs = [];
@@ -537,6 +626,7 @@ Viewer.prototype.preloadScene = function (id) {
         this._emit('preloaderror', this._makeError('SCENE_UNKNOWN', this.config, String(id), id, ++this.preloadSequence));
         return this;
     }
+    if (!this.preloadLimit || !this.preloadBudget) return this;
     var c = this._resolveConfig(this.scenes[id]);
     if (c.type === 'multires') {
         this._emit('preloaderror', this._makeError('TYPE_UNSUPPORTED', c, 'Multires tiles load on demand.', id, ++this.preloadSequence));
@@ -570,12 +660,22 @@ Viewer.prototype.preloadScene = function (id) {
         var activeEntry = { sceneId: id, requestId: ++this.preloadSequence, type: c.type,
             basePath: c.basePath, crossOrigin: c.crossOrigin, sources: sources.slice(), images: this.images.slice() };
         this._rememberPreloadedScene(activeEntry);
-        this._emit('scenepreload', { sceneId: id, requestId: activeEntry.requestId, cached: true });
+        this._emit('scenepreload', { sceneId: id, requestId: activeEntry.requestId, cached: !!this.preloadCache[id] });
         return this;
     }
     var existing = this.preloadRequests[id];
     if (existing && this._preloadCompatible(existing, c, sources)) return this;
     if (existing) this._cancelPreload(id);
+    var pendingIds = Object.keys(this.preloadRequests);
+    if (pendingIds.length >= this.preloadLimit) {
+        var oldest = null;
+        for (var pi = 0; pi < pendingIds.length; pi++) {
+            var candidate = this.preloadRequests[pendingIds[pi]];
+            if (!candidate.waiters.length && (!oldest || candidate.requestId < oldest.requestId)) oldest = candidate;
+        }
+        if (!oldest) return this;
+        this._cancelPreload(oldest.sceneId);
+    }
     var self = this, requestId = ++this.preloadSequence;
     var record = { sceneId: id, requestId: requestId, type: c.type, basePath: c.basePath,
         crossOrigin: c.crossOrigin, sources: sources.slice(), images: new Array(sources.length),
@@ -587,7 +687,8 @@ Viewer.prototype.preloadScene = function (id) {
         if (record.settled || record.cancelled) return;
         record.settled = true;
         if (self.preloadRequests[id] === record) delete self.preloadRequests[id];
-        for (var j = 0; j < record.pending.length; j++) record.pending[j].onload = record.pending[j].onerror = null;
+        for (var j = 0; j < record.pending.length; j++) tpCancelImage(record.pending[j]);
+        record.pending.length = 0;
         var URLApi = self.win.URL || self.win.webkitURL;
         if (URLApi && URLApi.revokeObjectURL) for (j = 0; j < record.objectURLs.length; j++) URLApi.revokeObjectURL(record.objectURLs[j]);
         record.objectURLs = [];
@@ -602,6 +703,7 @@ Viewer.prototype.preloadScene = function (id) {
         if (--record.remaining) return;
         record.settled = true;
         delete self.preloadRequests[id];
+        record.pending.length = 0;
         self._rememberPreloadedScene(record);
         self._emit('scenepreload', { sceneId: id, requestId: requestId, cached: false });
         var waiters = record.waiters.slice(); record.waiters.length = 0;
@@ -640,12 +742,12 @@ Viewer.prototype.preloadScene = function (id) {
 };
 Viewer.prototype.clearSceneCache = function (id) {
     if (id !== undefined) {
-        delete this.preloadCache[id];
-        for (var i = this.preloadOrder.length - 1; i >= 0; i--) if (this.preloadOrder[i] === id) this.preloadOrder.splice(i, 1);
+        this._dropCachedScene(id);
         this._cancelPreload(id);
     } else {
         this.preloadCache = Object.create(null);
         this.preloadOrder = [];
+        this.preloadedBytes = 0;
         var ids = Object.keys(this.preloadRequests);
         for (var j = 0; j < ids.length; j++) this._cancelPreload(ids[j]);
     }
@@ -661,10 +763,12 @@ Viewer.prototype._makeError = function (code, config, cause, sceneId, requestId)
     error.code = code;
     error.sceneId = sceneId === undefined ? this.scene : sceneId;
     error.requestId = requestId === undefined ? this.generation : requestId;
+    if (cause !== undefined && cause !== null) error.cause = cause;
     return error;
 };
 Viewer.prototype._error = function (err) {
     if (this.dead) return;
+    this.displayError = err;
     this.root.setAttribute('aria-busy', 'false');
     this.status.textContent = err.message || String(err);
     this._emit('error', err);
@@ -719,6 +823,7 @@ Viewer.prototype._load = function (request, announce) {
     this._abortLoad();
     this.requested = request;
     this.loading = true;
+    this.displayError = null;
     this.renderFailed = false;
     var self = this, token = this.generation, c = request.config;
     var info = { sceneId: request.sceneId, requestId: token };
@@ -1304,7 +1409,7 @@ Viewer.prototype.isLoaded = function () { return this.loaded && !this.dead; };
 Viewer.prototype.getStats = function () {
     return extend({ renderer: this.getRenderer(), frames: this.frames, width: this.canvas ? this.canvas.width : 0,
         height: this.canvas ? this.canvas.height : 0, active: !!this.frame, loaded: this.isLoaded(), loading: this.loading,
-        preview: this.previewing, preloadedScenes: this.preloadOrder.length }, this.textureStats);
+        preview: this.previewing, preloadedScenes: this.preloadOrder.length, preloadedBytes: this.preloadedBytes }, this.textureStats);
 };
 Viewer.prototype.startAutoRotate = function (speed) {
     if (this.dead) return this;
@@ -1601,6 +1706,7 @@ Viewer.prototype.destroy = function () {
     this.animation = this.pendingHotspotFocus = null;
     this.rotation = this.rotationVelocity = 0;
     if (this.observer) this.observer.disconnect();
+    this.observer = null;
     for (var i = 0; i < this.listeners.length; i++) {
         var l = this.listeners[i]; l[0].removeEventListener(l[1], l[2], l[3]);
     }
@@ -1614,6 +1720,7 @@ Viewer.prototype.destroy = function () {
     this.gyroscopeButton = null;
     this.zoomInButton = this.zoomOutButton = null;
     this.base = this.config = {}; this.scenes = Object.create(null); this.textureStats = null;
+    this.displayError = this.stringOverrides = null;
     this.preloadCache = Object.create(null); this.preloadRequests = Object.create(null); this.preloadOrder = [];
     this.renderer = null; this.canvas = null;
 };

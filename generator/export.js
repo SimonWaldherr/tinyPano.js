@@ -127,16 +127,44 @@
     var container = document.querySelector('main'), fullscreen = document.getElementById('fullscreen');
     var share = document.getElementById('share'), shareURL = document.getElementById('share-url');
     var sharePanel = document.getElementById('share-fallback'), shareDismiss = document.getElementById('share-dismiss'), shareTicket = 0;
-    var shareInstruction = 'Link zur Ansicht markieren und kopieren.';
-    document.title = data.title || 'tinyPano Tour';
-    document.getElementById('tour-title').textContent = data.title || 'Panorama-Tour';
+    var language = data.language === 'en' ? 'en' : 'de';
+    var labels = language === 'en' ? {
+      tour: 'Panorama tour', scene: 'Scene', share: 'Share view', loading: 'Loading panorama…',
+      source: 'Image source', gyroOn: 'Enable gyroscope', gyroOff: 'Disable gyroscope', pending: 'Cancel permission request',
+      fullscreen: 'Fullscreen', fullscreenError: 'Unable to change fullscreen mode.',
+      shareGroup: 'Share the view by link', link: 'Link to this view', close: 'Close',
+      instructions: 'Select and copy the link. Press Escape to close.',
+      copyInstruction: 'Select and copy the link to this view.', copied: 'View link copied.', shared: 'View shared.',
+      created: 'Created with tinyPano', credits: 'Image credits above'
+    } : {
+      tour: 'Panorama-Tour', scene: 'Szene', share: 'Ansicht teilen', loading: 'Panorama wird geladen …',
+      source: 'Bildquelle', gyroOn: 'Gyroskop einschalten', gyroOff: 'Gyroskop ausschalten', pending: 'Freigabe abbrechen',
+      fullscreen: 'Vollbild', fullscreenError: 'Der Vollbildmodus konnte nicht geändert werden.',
+      shareGroup: 'Ansicht per Link teilen', link: 'Link zur aktuellen Ansicht', close: 'Schließen',
+      instructions: 'Link markieren und kopieren. Mit Escape schließen.',
+      copyInstruction: 'Link zur Ansicht markieren und kopieren.', copied: 'Link zur Ansicht kopiert.', shared: 'Ansicht geteilt.',
+      created: 'Erstellt mit tinyPano', credits: 'Bildrechte siehe Angaben oben'
+    };
+    document.documentElement.lang = language;
+    select.parentNode.firstChild.nodeValue = labels.scene + ' ';
+    share.textContent = labels.share; gyro.textContent = labels.gyroOn; fullscreen.textContent = labels.fullscreen;
+    sharePanel.setAttribute('aria-label', labels.shareGroup);
+    sharePanel.querySelector('label').textContent = labels.link;
+    document.getElementById('share-instructions').textContent = labels.instructions;
+    shareDismiss.textContent = labels.close;
+    var footer = document.querySelector('footer small');
+    footer.firstChild.nodeValue = labels.created + ' · ';
+    footer.lastChild.nodeValue = ' · ' + labels.credits;
+    var shareInstruction = labels.copyInstruction;
+    document.title = data.title || labels.tour;
+    document.getElementById('tour-title').textContent = data.title || labels.tour;
     Object.keys(scenes).forEach(function (id) {
       var option = document.createElement('option'); option.value = id; option.textContent = scenes[id].title || id;
       select.appendChild(option);
     });
     select.value = first;
     var viewer = tinyPano.viewer('panorama', {
-      default: { firstScene: first, language: 'de', autoLoad: true, compass: true, showGyroscopeCtrl: false, showFullscreenCtrl: false }, scenes: scenes
+      default: { firstScene: first, language: language, autoLoad: true, compass: true, showGyroscopeCtrl: false, showFullscreenCtrl: false }, scenes: scenes
     });
     function closeShare(restoreFocus) {
       sharePanel.hidden = true; shareURL.hidden = true; share.setAttribute('aria-expanded', 'false');
@@ -152,15 +180,25 @@
       if (!scene) return;
       select.value = id; title.textContent = scene.title || id; credit.textContent = '';
       if (scene.author) credit.appendChild(document.createTextNode(scene.author));
-      if (scene.license) credit.appendChild(document.createTextNode((scene.author ? ' · ' : '') + scene.license));
+      if (scene.attribution && scene.attribution !== scene.author) {
+        if (credit.textContent) credit.appendChild(document.createTextNode(' · '));
+        credit.appendChild(document.createTextNode(scene.attribution));
+      }
+      if (scene.license) {
+        if (credit.textContent) credit.appendChild(document.createTextNode(' · '));
+        if (/^https?:\/\//i.test(scene.licenseURL || '')) {
+          var licenseLink = document.createElement('a'); licenseLink.href = scene.licenseURL; licenseLink.textContent = scene.license;
+          licenseLink.target = '_blank'; licenseLink.rel = 'noopener noreferrer'; credit.appendChild(licenseLink);
+        } else credit.appendChild(document.createTextNode(scene.license));
+      }
       if (/^https?:\/\//i.test(scene.sourceURL || '')) {
         if (credit.textContent) credit.appendChild(document.createTextNode(' · '));
-        var link = document.createElement('a'); link.href = scene.sourceURL; link.textContent = 'Bildquelle';
+        var link = document.createElement('a'); link.href = scene.sourceURL; link.textContent = labels.source;
         link.target = '_blank'; link.rel = 'noopener noreferrer'; credit.appendChild(link);
       }
     }
     describe(first);
-    viewer.on('loadstart', function (event) { invalidateShare(); pending = event.requestId; status.textContent = 'Panorama wird geladen …'; });
+    viewer.on('loadstart', function (event) { invalidateShare(); pending = event.requestId; status.textContent = labels.loading; });
     viewer.on('viewchange', invalidateShare);
     viewer.on('sceneload', function (event) { if (event.requestId === pending) describe(event.sceneId); });
     viewer.on('render', function (event) {
@@ -170,7 +208,7 @@
     viewer.on('error', function (error) {
       invalidateShare();
       if (/^GYROSCOPE_/.test(error.code || '')) {
-        gyroPending = false; gyro.setAttribute('aria-busy', 'false'); gyro.textContent = 'Gyroskop einschalten';
+        gyroPending = false; gyro.setAttribute('aria-busy', 'false'); gyro.textContent = labels.gyroOn;
       }
       if (error.code === 'GYROSCOPE_PERMISSION' || error.code === 'GYROSCOPE_UNAVAILABLE' || error.code === 'FULLSCREEN' || error.code === 'VIEW_INVALID' || error.code === 'SCENE_UNKNOWN' || error.requestId === pending) {
         status.textContent = error.message;
@@ -197,7 +235,7 @@
         if (!current()) return;
         try {
           if (navigator.clipboard && navigator.clipboard.writeText) {
-            Promise.resolve(navigator.clipboard.writeText(url)).then(function () { done('Link zur Ansicht kopiert.'); }, fallback);
+            Promise.resolve(navigator.clipboard.writeText(url)).then(function () { done(labels.copied); }, fallback);
             return;
           }
         } catch (_) {}
@@ -207,7 +245,7 @@
         var data = { title: document.title, url: url };
         if (navigator.share && (!navigator.canShare || navigator.canShare(data))) {
           // Keep this call in the click handler so browser user activation is retained.
-          Promise.resolve(navigator.share(data)).then(function () { done('Ansicht geteilt.'); }, function (error) {
+          Promise.resolve(navigator.share(data)).then(function () { done(labels.shared); }, function (error) {
             if (!current()) return;
             if (error && error.name === 'AbortError') done(''); else copy();
           });
@@ -224,16 +262,16 @@
     });
     gyro.onclick = function () {
       if (viewer.isGyroscopeEnabled() || gyroPending) {
-        gyroPending = false; gyro.setAttribute('aria-busy', 'false'); gyro.textContent = 'Gyroskop einschalten';
+        gyroPending = false; gyro.setAttribute('aria-busy', 'false'); gyro.textContent = labels.gyroOn;
         viewer.stopGyroscope();
       } else {
-        gyroPending = true; gyro.setAttribute('aria-busy', 'true'); gyro.textContent = 'Freigabe abbrechen';
+        gyroPending = true; gyro.setAttribute('aria-busy', 'true'); gyro.textContent = labels.pending;
         viewer.startGyroscope();
       }
     };
     viewer.on('gyroscopechange', function (event) {
       gyroPending = false; gyro.setAttribute('aria-busy', 'false');
-      gyro.setAttribute('aria-pressed', String(event.enabled)); gyro.textContent = event.enabled ? 'Gyroskop ausschalten' : 'Gyroskop einschalten';
+      gyro.setAttribute('aria-pressed', String(event.enabled)); gyro.textContent = event.enabled ? labels.gyroOff : labels.gyroOn;
     });
     if (!window.DeviceOrientationEvent || window.isSecureContext === false) gyro.hidden = true;
     fullscreen.hidden = !(container.requestFullscreen || container.webkitRequestFullscreen);
@@ -241,7 +279,7 @@
       var active = document.fullscreenElement || document.webkitFullscreenElement;
       var target = active ? document : container;
       var action = active ? (document.exitFullscreen || document.webkitExitFullscreen) : (container.requestFullscreen || container.webkitRequestFullscreen);
-      function failed() { invalidateShare(); status.textContent = 'Der Vollbildmodus konnte nicht geändert werden.'; }
+      function failed() { invalidateShare(); status.textContent = labels.fullscreenError; }
       if (action) try {
         var result = action.call(target);
         if (result && result.catch) result.catch(failed);
@@ -278,6 +316,7 @@
     var data, extras;
     try {
       data = JSON.parse(JSON.stringify(tour));
+      data.language = String(data.language || 'de').toLowerCase().split(/[-_]/)[0] === 'de' ? 'de' : 'en';
       extras = files.map(function (file) { return { name: String(file.name), data: payload(file.data) }; });
     } catch (error) { return Promise.reject(error); }
     var included = Object.create(null);
@@ -298,13 +337,13 @@
     }).then(function (runtimeFiles) {
       checkAbort(options);
       var contents = [
-        { name: 'index.html', data: html }, { name: 'tour.css', data: css },
+        { name: 'index.html', data: html.replace('<html lang=\"de\">', '<html lang=\"' + data.language + '\">') }, { name: 'tour.css', data: css },
         { name: 'tour.js', data: '(' + runtime.toString() + ')();\n' },
         { name: 'tour-data.js', data: 'window.tinyPanoTourData = ' + safeJSON(data) + ';\n' },
         { name: 'tour.json', data: safeJSON(data) + '\n' },
         { name: 'tinyPano.min.js', data: runtimeFiles[0] }, { name: 'tinyPano.min.css', data: runtimeFiles[1] },
         { name: 'LICENSE.txt', data: runtimeFiles[2] },
-        { name: 'README.txt', data: 'tinyPano Tour\n\nAlle Dateien gemeinsam auf statisches HTTP(S)-Hosting kopieren. Lokal zum Beispiel: python3 -m http.server 8080\nDann http://localhost:8080 öffnen. Gyroskop benötigt HTTPS oder localhost und ein unterstütztes Mobilgerät; Berechtigung per Knopfdruck.\n\nDie Bilder werden in Originalauflösung exportiert. Bei Bedarf vor dem Import verkleinern. Kein Multiresolution-/Kachelexport.\nCode: MIT (LICENSE.txt). Bildrechte, Autor, Lizenz und Quelle: tour.json und Angaben in der Tour. Diese Angaben vor Veröffentlichung prüfen.\n\nProjektdateien zum Weiterbearbeiten werden separat im Generator gespeichert.\n' }
+        { name: 'README.txt', data: data.language === 'en' ? 'tinyPano Tour\n\nUpload all extracted files together to a static HTTP(S) host. To preview locally: python3 -m http.server 8080\nThen open http://localhost:8080. Gyroscope requires HTTPS or localhost and a supported device.\n\nImported image files are included; resize large local files before importing. No tile export.\nCode: MIT (LICENSE.txt). Image authors, sources and licenses: tour.json and the tour credits.\n\nKeep a separate project file to edit the tour later.\n' : 'tinyPano Tour\n\nAlle Dateien gemeinsam auf statisches HTTP(S)-Hosting kopieren. Lokal zum Beispiel: python3 -m http.server 8080\nDann http://localhost:8080 öffnen. Gyroskop benötigt HTTPS oder localhost und ein unterstütztes Mobilgerät; Berechtigung per Knopfdruck.\n\nDie importierten Bilddateien werden exportiert. Große lokale Bilder bei Bedarf vor dem Import verkleinern. Kein Multiresolution-/Kachelexport.\nCode: MIT (LICENSE.txt). Bildrechte, Autor, Lizenz und Quelle: tour.json und Angaben in der Tour. Diese Angaben vor Veröffentlichung prüfen.\n\nProjektdateien zum Weiterbearbeiten werden separat im Generator gespeichert.\n' }
       ];
       return zip(contents.concat(extras), { signal: options.signal, onProgress: function (event) {
         if (event.completed && typeof options.onProgress === 'function') options.onProgress(event);

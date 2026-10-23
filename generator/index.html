@@ -24,6 +24,7 @@
     <section class="project-bar" aria-label="Tour und Projektdateien">
       <label class="tour-label" for="tour-title">NAME DER TOUR<input id="tour-title" type="text" value="Meine Panorama-Tour" maxlength="200"></label>
       <div class="project-actions">
+        <label for="tour-language">Tour-Sprache <select id="tour-language"><option value="de">Deutsch</option><option value="en">English</option></select></label>
         <button id="project-open" class="button secondary" type="button">Projekt öffnen</button>
         <button id="project-save" class="button secondary" type="button" disabled>Projekt sichern</button>
         <button id="export-tour" class="button primary" type="button" disabled>Website als ZIP <span aria-hidden="true">↗</span></button>
@@ -51,6 +52,12 @@
         <div class="panel-heading"><h2 id="scenes-heading"><span>01</span> Panoramen</h2><span id="scene-count" class="count">0</span></div>
         <label class="import-button" id="import-label" for="panorama-files"><span aria-hidden="true">＋</span> Bilder hinzufügen<input id="panorama-files" class="visually-hidden" type="file" accept="image/jpeg,image/png,image/webp,image/avif,image/gif,image/bmp" multiple></label>
         <p class="small-copy">Oder Dateien hierher ziehen.</p>
+        <form id="commons-import" class="commons-import">
+          <label for="commons-url">Wikimedia Commons<input id="commons-url" type="url" required placeholder="Dateiseite oder Bild-URL"></label>
+          <label for="commons-width">Bildbreite<select id="commons-width"><option value="1280">1280 px</option><option value="1920">1920 px</option><option value="3840" selected>3840 px</option></select></label>
+          <button id="commons-submit" class="button secondary compact" type="submit">Von Commons laden</button>
+          <p class="small-copy">Lädt Bild und Bildnachweis von Wikimedia. Kein Upload. Vorschau statt riesiger Originaldatei.</p>
+        </form>
         <div id="scene-list" class="scene-list" aria-label="Panorama auswählen"><p class="empty-list">Noch keine Panoramen importiert.</p></div>
         <div class="first-scene"><label for="first-scene">Start der Tour</label><select id="first-scene" disabled><option value="">Noch kein Panorama</option></select></div>
       </aside>
@@ -66,7 +73,7 @@
         </div>
         <div class="camera-toolbar"><span id="camera-readout">Blickrichtung noch offen</span><div><button id="edit-hotspots" class="button secondary compact" type="button" disabled>Hotspots bearbeiten</button><button id="gyro-toggle" class="text-button" type="button" aria-pressed="false" disabled>Gyroskop</button><button id="save-view" class="button primary compact" type="button" disabled>Startblick speichern</button></div></div>
         <p id="initial-view" class="small-copy">Ziehe im Bild, um dich umzusehen. Das Fadenkreuz markiert die Position neuer Hotspots.</p>
-        <section class="export-note"><span class="step-number">↗</span><div><h3>Website exportieren</h3><p>Das ZIP enthält die Originalbilder, den Viewer und alle Bildnachweise. Entpacken und über HTTP(S) bereitstellen, zum Beispiel auf deinem Webserver. Sichere außerdem eine Projektdatei, um die Tour später weiterzubearbeiten.</p></div></section>
+        <section class="export-note"><span class="step-number">↗</span><div><h3>Website exportieren</h3><p>Das ZIP enthält die importierten Bilder, den Viewer und alle Bildnachweise. Entpacken und über HTTP(S) bereitstellen, zum Beispiel auf deinem Webserver. Sichere außerdem eine Projektdatei, um die Tour später weiterzubearbeiten.</p></div></section>
       </section>
 
       <aside class="settings-panel panel" aria-labelledby="settings-heading">
@@ -74,8 +81,10 @@
         <fieldset id="scene-fields" disabled>
           <legend class="visually-hidden">Aktuelles Panorama</legend>
           <label for="scene-title">Titel<input id="scene-title" type="text" maxlength="200" placeholder="Zum Beispiel: Am Donauufer"></label>
-          <label for="scene-author">Fotograf / Urheber<input id="scene-author" type="text" maxlength="200" placeholder="Name"></label>
+          <label for="scene-author">Fotograf / Urheber<input id="scene-author" type="text" placeholder="Name"></label>
           <label for="scene-source">Quellseite<input id="scene-source" type="url" maxlength="2000" placeholder="https://…"></label>
+          <label for="scene-attribution">Zusätzlicher Bildnachweis<textarea id="scene-attribution" rows="2"></textarea></label>
+          <label for="scene-license-url">Lizenz-URL<input id="scene-license-url" type="url"></label>
           <label for="scene-license">Lizenz<input id="scene-license" type="text" maxlength="300" placeholder="Zum Beispiel: CC BY-SA 4.0"></label>
           <p id="image-details" class="small-copy">Bildgröße und Dateiformat</p>
           <div class="scene-actions"><button id="duplicate-scene" class="button secondary compact" type="button">Duplizieren</button><button id="scene-up" class="button secondary compact" type="button" aria-label="Panorama nach oben verschieben">↑</button><button id="scene-down" class="button secondary compact" type="button" aria-label="Panorama nach unten verschieben">↓</button></div>
@@ -125,6 +134,7 @@
   <script src="../dist/tinyPano.min.js"></script>
   <script src="export.js"></script>
   <script src="storage.js"></script>
+  <script src="commons.js"></script>
   <script src="generator.js"></script>
 </body>
 </html>

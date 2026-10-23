@@ -8,6 +8,26 @@ const createCanvasRenderer = vm.runInNewContext(
     fs.readFileSync(path.join(__dirname, '../src/renderers.js'), 'utf8') + '\n;tpCanvasRenderer;'
 );
 
+test('Canvas pixel extraction resizes each source in a single temporary canvas', () => {
+    const prepare = vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../src/renderers.js'), 'utf8') + '\n;tpPrepareSources;');
+    const created = [];
+    const doc = { createElement() {
+        const canvas = { width: 1, height: 1, getContext() { return {
+            drawImage() {}, getImageData(x, y, width, height) { return { data: new Uint8ClampedArray(width * height * 4) }; }
+        }; } };
+        created.push(canvas);
+        return canvas;
+    } };
+    const image = { width: 400, height: 200 };
+    const result = prepare([image], { type: 'equirectangular' }, 100, doc, true);
+    assert.equal(created.length, 1, 'Downsampling and readback should share one canvas');
+    assert.equal(result.buffers[0].data.byteLength, 100 * 50 * 4);
+    assert.equal(result.downscaled, true);
+    assert.equal(created[0].width, 1, 'Temporary backing storage was not released');
+    assert.equal(created[0].height, 1);
+    assert.deepEqual(image, { width: 400, height: 200 });
+});
+
 // Supply the pixel storage used by Canvas 2D, so projection tests need no browser.
 function documentWithCanvases() {
     const doc = {

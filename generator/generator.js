@@ -83,9 +83,9 @@
     draftTimer = window.setTimeout(persistDraft, 650);
   }
   function projectData() {
-    return { format: 'tinyPano-project', version: 1, title: $('tour-title').value.trim() || 'Meine Panorama-Tour', firstScene: firstScene,
+    return { format: 'tinyPano-project', version: 1, language: $('tour-language').value, title: $('tour-title').value.trim() || 'Meine Panorama-Tour', firstScene: firstScene,
       scenes: scenes.map(function (scene) {
-        return { id: scene.id, title: scene.title, author: scene.author, sourceURL: scene.sourceURL, license: scene.license,
+        return { id: scene.id, title: scene.title, author: scene.author, sourceURL: scene.sourceURL, license: scene.license, licenseURL: scene.licenseURL, attribution: scene.attribution,
           yaw: scene.yaw, pitch: scene.pitch, hfov: scene.hfov, northOffset: scene.northOffset, hotSpots: cloneHotspots(scene.hotSpots),
           fileName: scene.fileName, mime: scene.mime, image: scene.file };
       }) };
@@ -228,6 +228,7 @@
     $('first-scene').disabled = !scenes.length || previewMode || importing;
     $('project-open').disabled = importing || exporting;
     $('panorama-files').disabled = importing || exporting || previewMode;
+    ['commons-url', 'commons-width', 'commons-submit'].forEach(function (id) { $(id).disabled = importing || exporting || previewMode || !!positionSession; });
     $('import-label').classList.toggle('is-disabled', importing || exporting || previewMode);
     $('restore-draft').disabled = $('discard-draft').disabled = $('clear-draft').disabled = importing || exporting;
     $('add-link').disabled = !editable || !$('hotspot-target').value;
@@ -275,7 +276,7 @@
         button.type = 'button';
         button.setAttribute('data-scene-id', scene.id);
         var thumbnail = document.createElement('img');
-        thumbnail.src = scene.url;
+        if (scene.thumbnail) thumbnail.src = scene.thumbnail;
         thumbnail.alt = '';
         thumbnail.loading = 'lazy';
         var label = element('span');
@@ -371,6 +372,8 @@
     $('scene-author').value = scene ? scene.author : '';
     $('scene-source').value = scene ? scene.sourceURL : '';
     $('scene-license').value = scene ? scene.license : '';
+    $('scene-license-url').value = scene && scene.licenseURL || '';
+    $('scene-attribution').value = scene && scene.attribution || '';
     $('scene-north').value = scene && scene.northOffset !== null ? scene.northOffset : '';
     $('current-title').textContent = scene ? scene.title || 'Unbenanntes Panorama' : 'Panorama bearbeiten';
     $('image-details').textContent = scene ? scene.width + ' × ' + scene.height + ' · ' + size(scene.file.size) + ' · ' + scene.fileName : 'Bildgröße und Dateiformat';
@@ -519,8 +522,19 @@
       if (signal) signal.addEventListener('abort', cancel, { once: true });
       image.onload = function () {
         if (!image.naturalWidth || !image.naturalHeight || image.naturalWidth * image.naturalHeight > 100000000) { fail(new Error('Das Bild hat keine gültige Größe oder überschreitet 100 Megapixel.')); return; }
+        var width = image.naturalWidth, height = image.naturalHeight, thumbnail = null;
+        var canvas = document.createElement('canvas');
+        try {
+          var scale = Math.min(1, 192 / Math.max(width, height));
+          canvas.width = Math.max(1, Math.round(width * scale));
+          canvas.height = Math.max(1, Math.round(height * scale));
+          var context = canvas.getContext('2d');
+          if (context) { context.drawImage(image, 0, 0, canvas.width, canvas.height); thumbnail = canvas.toDataURL('image/jpeg', 0.75); }
+        } catch (_) { /* The scene label remains usable if thumbnail creation fails. */ }
+        finally { canvas.width = canvas.height = 1; }
         cleanup();
-        resolve({ url: url, width: image.naturalWidth, height: image.naturalHeight });
+        image.removeAttribute('src');
+        resolve({ url: url, width: width, height: height, thumbnail: thumbnail });
       };
       image.onerror = function () { fail(new Error('Das Bild konnte nicht gelesen werden.')); };
       image.src = url;
@@ -578,7 +592,7 @@
           if (epoch !== projectEpoch) { URL.revokeObjectURL(decoded.url); return; }
           var scene = { id: freshId(), title: file.name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').slice(0, 200), author: '', sourceURL: '', license: '',
             yaw: 0, pitch: 0, hfov: 100, northOffset: null, hotSpots: [], file: file, fileName: file.name, mime: mime, url: decoded.url,
-            width: decoded.width, height: decoded.height };
+            width: decoded.width, height: decoded.height, thumbnail: decoded.thumbnail };
           scenes.push(scene);
           if (!firstScene) firstScene = scene.id;
           syncViewerScene(scene);
@@ -597,6 +611,41 @@
       announce(message, !!failures.length);
     } catch (error) { announce(error.name === 'AbortError' ? 'Import abgebrochen. ' + added + ' bereits geöffnete Panoramen bleiben erhalten.' : error.message, error.name !== 'AbortError'); }
     finally { importing = false; endOperation(); updateControls(); }
+  }
+
+  async function importCommons(event) {
+    event.preventDefault();
+    if (importing || exporting || previewMode || positionSession) return;
+    if (scenes.length >= MAX_SCENES) { announce('Maximal 200 Panoramen pro Projekt.', true); return; }
+    importing = true;
+    var signal = beginOperation('Commons-Bild und Bildnachweis werden geladen …');
+    updateControls();
+    var decoded;
+    try {
+      var used = scenes.reduce(function (sum, scene) { return sum + scene.file.size; }, 0);
+      var image = await window.tinyPanoCommons.load($('commons-url').value.trim(), {
+        width: Number($('commons-width').value), maxBytes: MAX_PROJECT_BYTES - used, signal: signal
+      });
+      checkAbort(signal);
+      decoded = await decodeImage(image.file, signal);
+      checkAbort(signal);
+      var scene = { id: freshId(), title: image.title.slice(0, 200), author: image.author, attribution: image.attribution,
+        sourceURL: image.sourceURL, license: image.license, licenseURL: image.licenseURL,
+        yaw: 0, pitch: 0, hfov: 100, northOffset: null, hotSpots: [], file: image.file, fileName: image.fileName,
+        mime: image.mime, url: decoded.url, width: decoded.width, height: decoded.height, thumbnail: decoded.thumbnail };
+      scenes.push(scene);
+      decoded = null;
+      if (!firstScene) firstScene = scene.id;
+      changed();
+      syncViewerScene(scene);
+      if (!selectedId) createViewer(scene.id);
+      renderSceneList();
+      renderSceneForm();
+      var message = 'Commons-Bild geladen: ' + scene.width + ' × ' + scene.height + ' Pixel. Bildnachweis übernommen.';
+      if (Math.abs(scene.width / scene.height - 2) > 0.05) message += ' Das Bild weicht von 2:1 ab und wird als vollständige Kugel dargestellt.';
+      announce(message);
+    } catch (error) { announce(error.name === 'AbortError' ? 'Commons-Import abgebrochen.' : error.message, error.name !== 'AbortError'); }
+    finally { if (decoded) URL.revokeObjectURL(decoded.url); importing = false; endOperation(); updateControls(); }
   }
 
   function addHotspot(link) {
@@ -790,9 +839,9 @@
     var suffix = ' (Kopie)';
     var title = (scene.title || 'Panorama').slice(0, 200 - suffix.length).replace(/[\uD800-\uDBFF]$/, '') + suffix;
     var copy = { id: freshId(), title: title, author: scene.author, sourceURL: scene.sourceURL,
-      license: scene.license, yaw: scene.yaw, pitch: scene.pitch, hfov: scene.hfov, northOffset: scene.northOffset,
+      license: scene.license, licenseURL: scene.licenseURL, attribution: scene.attribution, yaw: scene.yaw, pitch: scene.pitch, hfov: scene.hfov, northOffset: scene.northOffset,
       file: scene.file, fileName: scene.fileName, mime: scene.mime, width: scene.width, height: scene.height,
-      url: URL.createObjectURL(scene.file), hotSpots: cloneHotspots(scene.hotSpots) };
+      url: URL.createObjectURL(scene.file), thumbnail: scene.thumbnail, hotSpots: cloneHotspots(scene.hotSpots) };
     var reserved = usedHotspotIds();
     copy.hotSpots.forEach(function (spot) {
       spot.id = freshHotspotId(reserved);
@@ -809,11 +858,11 @@
     var files = [];
     scenes.forEach(function (scene) {
       var path = 'assets/' + scene.id + '.' + mimeExtensions[scene.mime];
-      data[scene.id] = { id: scene.id, title: scene.title, author: scene.author, sourceURL: scene.sourceURL, license: scene.license,
+      data[scene.id] = { id: scene.id, title: scene.title, author: scene.author, sourceURL: scene.sourceURL, license: scene.license, licenseURL: scene.licenseURL, attribution: scene.attribution,
         panorama: path, yaw: scene.yaw, pitch: scene.pitch, hfov: scene.hfov, northOffset: scene.northOffset, hotSpots: cloneHotspots(scene.hotSpots) };
       files.push({ name: path, data: scene.file });
     });
-    return { tour: { version: 1, title: $('tour-title').value.trim() || 'Meine Panorama-Tour', firstScene: firstScene, scenes: data }, files: files };
+    return { tour: { version: 1, language: $('tour-language').value, title: $('tour-title').value.trim() || 'Meine Panorama-Tour', firstScene: firstScene, scenes: data }, files: files };
   }
   function download(blob, name) {
     var url = URL.createObjectURL(blob);
@@ -856,7 +905,7 @@
     var project = projectData();
     try {
       announce('Projektdatei mit eingebetteten Bildern wird vorbereitet …');
-      var header = { format: project.format, version: project.version, title: project.title, firstScene: project.firstScene };
+      var header = { format: project.format, version: project.version, language: project.language, title: project.title, firstScene: project.firstScene };
       var parts = [JSON.stringify(header).slice(0, -1) + ',"scenes":['];
       for (var i = 0; i < project.scenes.length; i++) {
         checkAbort(signal);
@@ -958,12 +1007,13 @@
         totalBytes += image.blob.size;
         if (totalBytes > MAX_PROJECT_BYTES) throw new Error('Die Projektbilder überschreiten zusammen 256 MB.');
         var decoded = await decodeImage(image.blob, signal);
-        candidates.push({ id: source.id, title: text(source.title, 'Panorama', 200), author: text(source.author, '', 200),
+        candidates.push({ id: source.id, title: text(source.title, 'Panorama', 200), author: text(source.author, '', 20000),
           sourceURL: text(source.sourceURL, '', 2000), license: text(source.license, '', 300),
+          licenseURL: text(source.licenseURL, '', 2000), attribution: text(source.attribution, '', 20000),
           yaw: number(source.yaw, 0, -180, 180), pitch: number(source.pitch, 0, -90, 90), hfov: number(source.hfov, 100, 30, 120),
           northOffset: source.northOffset === undefined || source.northOffset === null ? null : ((source.northOffset % 360) + 360) % 360,
           hotSpots: hotSpots[i], file: image.blob, fileName: text(source.fileName, source.id + '.' + mimeExtensions[image.mime], 300),
-          mime: image.mime, url: decoded.url, width: decoded.width, height: decoded.height });
+          mime: image.mime, url: decoded.url, width: decoded.width, height: decoded.height, thumbnail: decoded.thumbnail });
       }
       checkAbort(signal);
       destroyViewer();
@@ -975,6 +1025,7 @@
       selectedId = firstScene;
       previewMode = false;
       $('tour-title').value = text(project.title, 'Meine Panorama-Tour', 200);
+      $('tour-language').value = project.language === 'en' ? 'en' : 'de';
       revision++;
       dirty = !!restoredProject;
       if (restoredProject) { recoveryProject = null; $('recovery-panel').hidden = true; }
@@ -999,7 +1050,7 @@
     var state = snapshot();
     var savedRevision = revision;
     try {
-      announce('Website wird zusammengestellt. Die Originalbilder werden unverändert eingepackt …');
+      announce('Website wird zusammengestellt. Die importierten Bilddateien werden eingepackt …');
       var zip = await tinyPanoTourExport.createTour(state.tour, state.files, { signal: signal, onProgress: function (progress) {
         operationProgress(progress.completed, progress.total, 'Website: ' + progress.completed + ' / ' + progress.total + (progress.name ? ' · ' + progress.name : ''));
       } });
@@ -1010,14 +1061,16 @@
     finally { exporting = false; endOperation(); updateControls(); }
   }
 
+  $('commons-import').addEventListener('submit', importCommons);
   $('panorama-files').addEventListener('change', function () { importImages(this.files); this.value = ''; });
   $('tour-title').addEventListener('input', changed);
+  $('tour-language').addEventListener('change', changed);
   $('first-scene').addEventListener('change', function () { if (findScene(this.value)) { firstScene = this.value; changed(); announce('Startpanorama geändert.'); } });
-  ['scene-title', 'scene-author', 'scene-source', 'scene-license'].forEach(function (id) {
+  ['scene-title', 'scene-author', 'scene-source', 'scene-license', 'scene-license-url', 'scene-attribution'].forEach(function (id) {
     $(id).addEventListener('input', function () {
       var scene = selectedScene();
       if (!scene || previewMode || !viewerReady) return;
-      var key = { 'scene-title': 'title', 'scene-author': 'author', 'scene-source': 'sourceURL', 'scene-license': 'license' }[id];
+      var key = { 'scene-title': 'title', 'scene-author': 'author', 'scene-source': 'sourceURL', 'scene-license': 'license', 'scene-license-url': 'licenseURL', 'scene-attribution': 'attribution' }[id];
       scene[key] = this.value;
       changed();
       syncViewerScene(scene);

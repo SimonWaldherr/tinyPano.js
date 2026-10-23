@@ -16,6 +16,7 @@ export interface RenderEvent extends LoadEvent { preview: boolean }
 export interface PreloadEvent { sceneId: string; requestId: number; cached?: boolean }
 export interface GyroscopeEvent { enabled: boolean }
 export interface AutoRotateEvent { enabled: boolean; speed: number }
+export interface LanguageEvent { language: 'en' | 'de' }
 export interface ViewerError extends Error { code: string; sceneId: string | null; requestId: number }
 export interface HotSpot {
     id?: string; pitch?: number; yaw?: number; text?: string; type?: 'info' | 'scene';
@@ -32,7 +33,8 @@ export interface Config {
     readXMP?: boolean;
     /** Optional low-resolution equirectangular image; also supported before a full cubemap. */
     preview?: ImageSource;
-    language?: 'en' | 'de'; strings?: Partial<ViewerStrings>;
+    /** en/de, regional tags such as de-AT, or auto (document/browser language, default). */
+    language?: string; strings?: Partial<ViewerStrings>;
     yaw?: number; pitch?: number; hfov?: number; minHfov?: number; maxHfov?: number;
     /** Clockwise bearing of the image center from true north; null means unknown. */
     northOffset?: number | null; compass?: boolean;
@@ -48,14 +50,18 @@ export interface Config {
     draggable?: boolean; disableKeyboardCtrl?: boolean; inertia?: boolean;
     renderer?: 'auto' | 'webgl' | 'canvas'; maxDpr?: number; maxPixels?: number;
     maxTextureSize?: number; fallbackWidth?: number;
-    /** Number of decoded scenes retained by preloadScene; clamped to 1–8 (default 2). */
+    /** Number of decoded scenes retained by preloadScene; clamped to 0–8 (default 2). Zero disables preloading. */
     maxPreloadedScenes?: number;
+    /** Approximate decoded RGBA cache budget in bytes (default 64 MiB). Zero disables preloading. */
+    maxPreloadBytes?: number;
     hotSpots?: HotSpot[]; firstScene?: string; default?: Config; scenes?: Record<string, Config>;
 }
 export interface Stats {
     renderer: 'webgl' | 'canvas' | null; frames: number; width: number; height: number;
     active: boolean; loaded: boolean; loading: boolean; preview: boolean;
     textureWidth?: number; textureHeight?: number; downscaled?: boolean; tiled?: boolean; preloadedScenes: number;
+    /** Estimated decoded bytes retained in the scene cache, excluding the active renderer. */
+    preloadedBytes: number;
 }
 export interface Viewer {
     on(name: 'load' | 'destroy' | 'contextlost' | 'contextrestored', callback: () => void): this;
@@ -65,6 +71,7 @@ export interface Viewer {
     on(name: 'render', callback: (event: RenderEvent) => void): this;
     on(name: 'gyroscopechange', callback: (event: GyroscopeEvent) => void): this;
     on(name: 'autorotatechange', callback: (event: AutoRotateEvent) => void): this;
+    on(name: 'languagechange', callback: (event: LanguageEvent) => void): this;
     on(name: 'error', callback: (error: ViewerError) => void): this;
     on(name: 'viewchange', callback: (view: View) => void): this;
     on(name: 'scenechange', callback: (sceneId: string) => void): this;
@@ -76,6 +83,9 @@ export interface Viewer {
     getScene(): string | null; getContainer(): HTMLElement;
     getViewState(): ViewState; setViewState(state: Partial<ViewState>, duration?: number): this;
     getViewURL(url?: string): string; loadViewURL(url?: string): this;
+    getLanguage(): 'en' | 'de';
+    /** Update viewer controls and built-in labels without reloading the image or resetting the view. */
+    setLanguage(language: string, strings?: Partial<ViewerStrings>): this;
     lookAt(pitch?: number | null, yaw?: number | null, hfov?: number | null, duration?: number): this;
     setYaw(yaw: number, duration?: number): this; setPitch(pitch: number, duration?: number): this;
     /** Change zoom while retaining active or pending gyroscope control. */
