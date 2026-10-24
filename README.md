@@ -79,6 +79,12 @@ This builds the viewer and checks rendering, project save/open, tour export,
 package imports and TypeScript declarations. Test touch and sensors on your
 target devices too.
 
+Run `npm run bench:zoom -- --baseline <commit> --runs 5` to compare zoom response
+and rendering with an earlier commit. Omit `--baseline` to measure the current
+sources only; `--software` uses SwiftShader. Use `--scenario render` or
+`--scenario render-tilted` to compare identical camera paths across versions.
+Results are saved under `test-results/`.
+
 `dist/` is generated and ignored by Git. GitHub Actions checks the build on
 Node.js 24 using the runner's Chrome. Successful `main` builds deploy to GitHub Pages.
 In the repository's Pages settings, select **GitHub Actions** as the source.

@@ -477,6 +477,31 @@ h1 {
   border-bottom: 1px solid var(--line);
 }
 
+#commons-browse {
+  justify-content: center;
+  min-height: 44px;
+  padding: 10px 16px;
+  border: 1px solid #839b64;
+  border-radius: 6px;
+  background: var(--accent);
+  color: #29391d;
+  font-weight: 600;
+}
+
+#commons-browse:hover:not(:disabled) {
+  background: #c3df8e;
+  border-color: #617c42;
+}
+
+#commons-browse:active:not(:disabled) {
+  background: #b4d17e;
+}
+
+#commons-browse:focus-visible {
+  outline: 3px solid #506d31;
+  outline-offset: 3px;
+}
+
 .commons-gallery select {
   flex: 1 1 240px;
   min-width: 0;

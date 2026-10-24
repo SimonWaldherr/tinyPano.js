@@ -309,8 +309,8 @@ Viewer.prototype._configureControls = function () {
     this.gyroscopeButton = null;
     if (c.showControls !== false) {
         if (c.showZoomCtrl !== false) {
-            this.zoomInButton = this._button(c.strings.zoomIn, '+', function () { self._zoomBy(-10, 180); });
-            this.zoomOutButton = this._button(c.strings.zoomOut, '−', function () { self._zoomBy(10, 180); });
+            this.zoomInButton = this._button(c.strings.zoomIn, '+', function () { self._zoomBy(-10, 120); });
+            this.zoomOutButton = this._button(c.strings.zoomOut, '−', function () { self._zoomBy(10, 120); });
             this._updateZoomControls();
         }
         if (c.showFullscreenCtrl !== false && (this.root.requestFullscreen || this.root.webkitRequestFullscreen)) {
@@ -425,10 +425,9 @@ Viewer.prototype._updateZoomControls = function () {
 };
 Viewer.prototype._zoomBy = function (delta, duration, anchor) {
     if (this.dead || !delta) return this;
-    var previous = this.animation ? this.animation.targetHfov : this.view.hfov;
+    var previous = duration > 0 && this.animation ? this.animation.targetHfov : this.view.hfov;
     var target = clamp(previous + delta, this.config.minHfov, this.config.maxHfov);
-    if (target === previous && !this.rotation) return this;
-    if (this.win.matchMedia && this.win.matchMedia('(prefers-reduced-motion: reduce)').matches) duration = 0;
+    if (target === previous && !this.rotation && (duration > 0 || !this.animation)) return this;
     this.setHfov(target, duration);
     if (this.dead) return this;
     if (anchor && !this.gyroEnabled && !this.gyroPending) {
@@ -437,11 +436,11 @@ Viewer.prototype._zoomBy = function (delta, duration, anchor) {
     }
     return this;
 };
-Viewer.prototype._captureZoomAnchor = function (clientX, clientY, allowOutside) {
-    var rect = this.root.getBoundingClientRect();
+Viewer.prototype._captureZoomAnchor = function (clientX, clientY, allowOutside, rect) {
+    rect = rect || this.root.getBoundingClientRect();
     if (!rect.width || !rect.height || !isFinite(clientX) || !isFinite(clientY) ||
         (!allowOutside && (clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom))) return null;
-    var coords = this.mouseEventToCoords({ clientX: clientX, clientY: clientY });
+    var coords = this._mouseEventToCoords({ clientX: clientX, clientY: clientY }, rect);
     return { x: 2 * (clientX - rect.left) / rect.width - 1, y: 1 - 2 * (clientY - rect.top) / rect.height,
         pitch: coords[0], yaw: coords[1] };
 };
@@ -1213,14 +1212,14 @@ Viewer.prototype._bindInput = function () {
         if (!points[id]) return;
         points[id] = { x: x, y: y }; var next = measure();
         if (last && last.count === next.count) {
-            var anchor = self._captureZoomAnchor(last.x, last.y, true);
+            var rect = self.root.getBoundingClientRect();
+            var anchor = self._captureZoomAnchor(last.x, last.y, true, rect);
             var oldYaw = self.view.yaw, oldPitch = self.view.pitch;
             if (next.distance && last.distance) {
                 self.view.hfov = clamp(2 * Math.atan(Math.tan(self.view.hfov * RAD / 2) * last.distance / next.distance) / RAD,
                     self.config.minHfov, self.config.maxHfov);
             }
             if (anchor) {
-                var rect = self.root.getBoundingClientRect();
                 anchor.x = 2 * (next.x - rect.left) / rect.width - 1;
                 anchor.y = 1 - 2 * (next.y - rect.top) / rect.height;
                 self._applyZoomAnchor(anchor);
@@ -1275,7 +1274,10 @@ Viewer.prototype._bindInput = function () {
         var dy = finite(e.deltaY, 0) * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? self.height : 1);
         if (!dy) return;
         var anchor = c.zoomToCursor === false ? null : self._captureZoomAnchor(e.clientX, e.clientY);
-        self._zoomBy(clamp(dy, -200, 200) * 0.06, 120, anchor);
+        // Trackpads emit several events per frame. Apply their deltas directly;
+        // restarting an easing animation for each event delays visible progress.
+        // Rendering remains coalesced by _request into one animation frame.
+        self._zoomBy(clamp(dy, -200, 200) * (e.ctrlKey ? 0.24 : 0.12), 0, anchor);
         if (e.cancelable) e.preventDefault();
     }, { passive: false });
     this._listen(this.doc, 'click', function (e) {
@@ -1298,8 +1300,8 @@ Viewer.prototype._bindInput = function () {
         case 'ArrowRight': case 39: self._interact(); v.yaw += step; break;
         case 'ArrowUp': case 38: self._interact(); v.pitch += step; break;
         case 'ArrowDown': case 40: self._interact(); v.pitch -= step; break;
-        case '+': case '=': case 187: if (self.config.keyboardZoom !== false) self._zoomBy(-5, 180); else used = false; break;
-        case '-': case '_': case 189: if (self.config.keyboardZoom !== false) self._zoomBy(5, 180); else used = false; break;
+        case '+': case '=': case 187: if (self.config.keyboardZoom !== false) self._zoomBy(-5, 120); else used = false; break;
+        case '-': case '_': case 189: if (self.config.keyboardZoom !== false) self._zoomBy(5, 120); else used = false; break;
         default: used = false;
         }
         if (used) { e.preventDefault(); self._limit(); self._request(); }
@@ -1316,10 +1318,15 @@ Viewer.prototype._lookAt = function (pitch, yaw, hfov, duration, zoomOnly) {
     yaw = finite(yaw, v.yaw); hfov = clamp(finite(hfov, v.hfov), c.minHfov, c.maxHfov);
     this._interact(zoomOnly);
     if (this.dead) return this;
-    if (this.win.matchMedia && this.win.matchMedia('(prefers-reduced-motion: reduce)').matches) duration = 0;
+    if (duration > 0 && this.win.matchMedia && this.win.matchMedia('(prefers-reduced-motion: reduce)').matches) duration = 0;
+    var startTime = null;
+    if (duration > 0 && !this.doc.hidden && !this.collapsed && !this.contextLost) {
+        if (!this.win.requestAnimationFrame) startTime = Date.now();
+        else if (this.win.performance && typeof this.win.performance.now === 'function') startTime = this.win.performance.now();
+    }
     if (finite(duration, 0) > 0) this.animation = { pitch: v.pitch, yaw: v.yaw, hfov: v.hfov, targetPitch: pitch,
         deltaYaw: c.maxYaw - c.minYaw >= 360 ? wrap(yaw - v.yaw) : clamp(yaw, c.minYaw, c.maxYaw) - v.yaw,
-        targetHfov: hfov, duration: duration, time: null, zoomOnly: zoomOnly };
+        targetHfov: hfov, duration: duration, time: startTime, zoomOnly: zoomOnly };
     else { v.pitch = pitch; v.yaw = yaw; v.hfov = hfov; this._limit(); }
     this._updateZoomControls();
     this._request(); return this;
@@ -1327,8 +1334,8 @@ Viewer.prototype._lookAt = function (pitch, yaw, hfov, duration, zoomOnly) {
 Viewer.prototype.setYaw = function (value, duration) { return this.lookAt(null, value, null, duration); };
 Viewer.prototype.setPitch = function (value, duration) { return this.lookAt(value, null, null, duration); };
 Viewer.prototype.setHfov = function (value, duration) { return this._lookAt(null, null, value, duration, true); };
-Viewer.prototype.zoomIn = function (step, duration) { return this._zoomBy(-Math.abs(finite(step, 10)), finite(duration, 180)); };
-Viewer.prototype.zoomOut = function (step, duration) { return this._zoomBy(Math.abs(finite(step, 10)), finite(duration, 180)); };
+Viewer.prototype.zoomIn = function (step, duration) { return this._zoomBy(-Math.abs(finite(step, 10)), finite(duration, 120)); };
+Viewer.prototype.zoomOut = function (step, duration) { return this._zoomBy(Math.abs(finite(step, 10)), finite(duration, 120)); };
 Viewer.prototype.getYaw = function () { return this.view.yaw; };
 Viewer.prototype.getPitch = function () { return this.view.pitch; };
 Viewer.prototype.getHfov = function () { return this.view.hfov; };
@@ -1676,7 +1683,10 @@ Viewer.prototype._projectHotspots = function () {
     }
 };
 Viewer.prototype.mouseEventToCoords = function (e) {
-    var r = this.root.getBoundingClientRect(), f = this.width / (2 * Math.tan(this.view.hfov * RAD / 2));
+    return this._mouseEventToCoords(e, this.root.getBoundingClientRect());
+};
+Viewer.prototype._mouseEventToCoords = function (e, r) {
+    var f = this.width / (2 * Math.tan(this.view.hfov * RAD / 2));
     var x = (e.clientX - r.left - r.width / 2) * this.width / r.width / f;
     var y = -(e.clientY - r.top - r.height / 2) * this.height / r.height / f;
     var roll = (this.config.horizonCorrection || 0) * RAD, cr = Math.cos(roll), sr = Math.sin(roll);

@@ -372,6 +372,7 @@ function tpCanvasRenderer(canvas, options) {
     var invalidate = function () {};
     var tileGeneration = 0;
     var tileScratch = {};
+    var levelColumns = null, levelTangent = null;
 
     function tileUrl(multi, levelIndex, x, y) {
         var level = multi.levels[levelIndex];
@@ -560,6 +561,75 @@ function tpCanvasRenderer(canvas, options) {
         return false;
     }
 
+    // At zero pitch/roll, longitude and horizontal source samples are shared
+    // by every scanline. Keep this path separate so other projections retain
+    // their original inner loop and avoid per-pixel fast-path branches.
+    function renderLevel(view) {
+        var width = work.width, height = work.height;
+        var tangent = Math.tan(view.hfov * Math.PI / 360);
+        var step = 2 * tangent / width, rx, i, column;
+        if (!levelColumns || levelColumns.length !== width * 6) {
+            levelColumns = new Float64Array(width * 6); levelTangent = null;
+        }
+        if (levelTangent !== tangent) {
+            for (i = 0, rx = -tangent + step * 0.5; i < width; i++, rx += step) {
+                column = i * 6;
+                levelColumns[column] = Math.atan(rx);
+                levelColumns[column + 1] = 1 / Math.sqrt(1 + rx * rx);
+            }
+            levelTangent = tangent;
+        }
+        var buffer = buffers[0], pixels = buffer.data, sourceWidth = buffer.width, sourceHeight = buffer.height;
+        var wrap = state.haov >= Math.PI * 2 - 0.00001;
+        var yaw = view.yaw * Math.PI / 180, normalizedYaw = Math.atan2(Math.sin(yaw), Math.cos(yaw));
+        var longitude, u, sx, ix, ix1, fx;
+        for (i = 0; i < width; i++) {
+            column = i * 6;
+            longitude = normalizedYaw + levelColumns[column];
+            if (longitude < -Math.PI) longitude += Math.PI * 2;
+            else if (longitude > Math.PI) longitude -= Math.PI * 2;
+            longitude -= state.hOffset;
+            if (longitude < -Math.PI) longitude += Math.PI * 2;
+            else if (longitude > Math.PI) longitude -= Math.PI * 2;
+            u = 0.5 + longitude / state.haov;
+            if (!wrap && (u < 0 || u > 1)) { levelColumns[column + 2] = -1; continue; }
+            if (wrap) u -= Math.floor(u);
+            sx = u * sourceWidth - 0.5; ix = Math.floor(sx); fx = sx - ix; ix1 = ix + 1;
+            if (wrap) { ix = (ix + sourceWidth) % sourceWidth; ix1 %= sourceWidth; }
+            else { ix = Math.max(0, Math.min(sourceWidth - 1, ix)); ix1 = Math.max(0, Math.min(sourceWidth - 1, ix1)); }
+            levelColumns[column + 2] = ix * 4; levelColumns[column + 3] = ix1 * 4;
+            levelColumns[column + 4] = fx; levelColumns[column + 5] = 1 - fx;
+        }
+        var data = output.data, aspect = canvas.height / canvas.width;
+        var bg = [state.background[0] * 255, state.background[1] * 255, state.background[2] * 255];
+        var j, ry, v, sy, iy, iy1, fy, row, nextRow, left, right, p00, p10, p01, p11, alpha, channel, value;
+        var index = 0;
+        for (j = 0; j < height; j++) {
+            ry = (1 - 2 * (j + 0.5) / height) * tangent * aspect;
+            for (i = 0; i < width; i++, index += 4) {
+                column = i * 6; left = levelColumns[column + 2];
+                v = 0.5 - (Math.atan(ry * levelColumns[column + 1]) - state.vOffset) / state.vaov;
+                if (left < 0 || v < 0 || v > 1) {
+                    data[index] = bg[0]; data[index + 1] = bg[1]; data[index + 2] = bg[2]; data[index + 3] = 255;
+                    continue;
+                }
+                sy = v * sourceHeight - 0.5; iy = Math.floor(sy); fy = sy - iy; iy1 = iy + 1;
+                iy = Math.max(0, Math.min(sourceHeight - 1, iy)); iy1 = Math.max(0, Math.min(sourceHeight - 1, iy1));
+                row = iy * sourceWidth * 4; nextRow = iy1 * sourceWidth * 4; right = levelColumns[column + 3];
+                p00 = row + left; p10 = row + right; p01 = nextRow + left; p11 = nextRow + right;
+                fx = levelColumns[column + 4]; var oneMinusFx = levelColumns[column + 5];
+                alpha = ((pixels[p00 + 3] * oneMinusFx + pixels[p10 + 3] * fx) * (1 - fy) + (pixels[p01 + 3] * oneMinusFx + pixels[p11 + 3] * fx) * fy) / 255;
+                for (channel = 0; channel < 3; channel++) {
+                    value = (pixels[p00 + channel] * oneMinusFx + pixels[p10 + channel] * fx) * (1 - fy) + (pixels[p01 + channel] * oneMinusFx + pixels[p11 + channel] * fx) * fy;
+                    data[index + channel] = value * alpha + bg[channel] * (1 - alpha);
+                }
+                data[index + 3] = 255;
+            }
+        }
+        workContext.putImageData(output, 0, 0);
+        context.drawImage(work, 0, 0, canvas.width, canvas.height);
+    }
+
     return {
         canvas: canvas,
         name: 'canvas',
@@ -609,6 +679,10 @@ function tpCanvasRenderer(canvas, options) {
         render: function (view) {
             if (!state || destroyed) { return; }
             if (!output) { this.resize(canvas.width || 1, canvas.height || 1, 1); }
+            if (!state.cube && !state.multi && state.projection === 0 && view.pitch === 0 && state.roll === 0) {
+                renderLevel(view);
+                return;
+            }
             var width = work.width;
             var height = work.height;
             var selected = -1;
@@ -728,7 +802,7 @@ function tpCanvasRenderer(canvas, options) {
             tileGeneration++;
             clearTiles(state && state.multi);
             buffers = [];
-            state = output = null;
+            state = output = levelColumns = null;
             work.width = work.height = 1;
         },
         setInvalidate: function (callback) { invalidate = typeof callback === 'function' ? callback : function () {}; }

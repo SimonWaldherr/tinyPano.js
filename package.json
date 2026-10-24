@@ -29,6 +29,7 @@
   ],
   "scripts": {
     "build": "node scripts/build.cjs",
+    "bench:zoom": "node scripts/benchmark-zoom.cjs",
     "test:node": "node --test tests/*.test.cjs",
     "test:browser": "node scripts/test-browser.cjs",
     "test:package": "node scripts/check-package.cjs",
