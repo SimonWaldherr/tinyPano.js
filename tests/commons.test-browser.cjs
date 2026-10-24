@@ -127,4 +127,108 @@ const cases = [{
     assert.equal(await page.evaluate(() => !!window.metadataExecuted), false);
   }
 }];
+cases.push({
+  name: 'demo browses Commons on demand, loads remote images and restores shared views',
+  async run({ page, origin }) {
+    let catalogRequests = 0, imageRequests = 0, metadataRequests = 0;
+    const title = 'File:Fraueninsel Chiemsee Panorama.jpg';
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, 'share', { value: undefined, configurable: true });
+      Object.defineProperty(navigator, 'clipboard', { value: { writeText: () => Promise.reject(new Error('Test fallback')) }, configurable: true });
+    });
+    await page.route('https://commons.wikimedia.org/w/api.php?**', route => {
+      const query = new URL(route.request().url()).searchParams;
+      if (query.get('prop') === 'images') {
+        catalogRequests++;
+        const next = query.get('imcontinue');
+        assert.equal(query.get('titles'), 'User:SimonWaldherr/Pano');
+        return route.fulfill({ json: next ? { query: { pages: [{ images: [{ title: 'File:Missing Panorama.jpg' }] }] } } : {
+          continue: { imcontinue: 'next-page', continue: '||' },
+          query: { pages: [{ images: [{ title }, { title: 'File:Icon.svg' }] }] }
+        } });
+      }
+      metadataRequests++;
+      assert.equal(query.get('iiurlwidth'), '3840');
+      return route.fulfill({ json: query.get('titles') === 'File:Missing Panorama.jpg' ? { query: { pages: [{ missing: true }] } } : metadata() });
+    });
+    await page.route('https://thumb.wikimedia.org/**', route => {
+      imageRequests++;
+      assert.equal(route.request().resourceType(), 'image', 'Demo should load a remote image directly, without fetching a Blob copy');
+      assert.equal(route.request().url(), thumbnail);
+      return route.fulfill({ contentType: 'image/jpeg', headers: { 'Access-Control-Allow-Origin': '*' },
+        body: fs.readFileSync(path.join(__dirname, '../demo/assets/Kloster_Weltenburg_Panorama.jpg')) });
+    });
+    await page.goto(origin + '/demo/index.html');
+    await page.waitForFunction(() => !document.getElementById('zoom-in').disabled);
+    assert.equal(catalogRequests + metadataRequests + imageRequests, 0, 'Commons should stay idle until requested');
+    await page.locator('#commons-browse').click();
+    await page.waitForFunction(() => !document.getElementById('commons-scene').disabled);
+    assert.equal(catalogRequests, 2);
+    assert.equal(imageRequests, 0, 'Browsing must not download the gallery images');
+    assert.equal(await page.locator('#commons-scene option').count(), 3);
+    await page.locator('#commons-scene').selectOption(title);
+    await page.waitForFunction(() => document.getElementById('scene-title').textContent === 'Fraueninsel Chiemsee Panorama' && !document.getElementById('share').disabled && document.getElementById('loading-state').classList.contains('is-hidden'));
+    assert.equal(imageRequests, 1);
+    assert.equal(metadataRequests, 1);
+    assert.equal(await page.locator('#highlights').isHidden(), true);
+    assert.match(await page.locator('#photo-credit').textContent(), /SimonWaldherr.*CC BY-SA 4.0/);
+    assert.equal(await page.locator('#photo-credit a').first().getAttribute('href'), 'https://creativecommons.org/licenses/by-sa/4.0');
+    await page.locator('#share').click();
+    await page.locator('#share-url').waitFor({ state: 'visible' });
+    const sharedURL = await page.locator('#share-url').inputValue();
+    assert.equal(JSON.parse(decodeURIComponent(new URL(sharedURL).hash.slice(4))).sceneId, 'commons:' + title);
+    await page.goto(sharedURL);
+    await page.waitForFunction(() => document.getElementById('scene-title').textContent === 'Fraueninsel Chiemsee Panorama' && !document.getElementById('share').disabled && document.getElementById('loading-state').classList.contains('is-hidden'));
+    assert.equal(catalogRequests, 2, 'Shared views should resolve their file directly without loading the gallery');
+    await page.locator('#renderer').selectOption('canvas');
+    await page.waitForFunction(() => /CANVAS/.test(document.getElementById('renderer-stat').textContent) && document.getElementById('loading-state').classList.contains('is-hidden'));
+    assert.equal(await page.locator('#scene-title').textContent(), 'Fraueninsel Chiemsee Panorama');
+    await page.locator('#commons-browse').click();
+    await page.waitForFunction(() => !document.getElementById('commons-browse').disabled);
+    await page.locator('#commons-scene').selectOption('File:Missing Panorama.jpg');
+    await page.waitForFunction(() => document.getElementById('notice').textContent.includes('could not be opened'));
+    assert.equal(await page.locator('#scene-title').textContent(), 'Fraueninsel Chiemsee Panorama');
+    assert.equal(await page.locator('#commons-scene').inputValue(), title);
+    await page.locator('[data-scene="weltenburg"]').click();
+    await page.waitForFunction(() => document.querySelector('[data-scene="weltenburg"]').getAttribute('aria-pressed') === 'true');
+    assert.equal(await page.locator('#highlights').isVisible(), true);
+  }
+});
+
+cases.push({
+  name: 'demo retries gallery errors and cancels a pending Commons choice when returning to the current scene',
+  async run({ page, origin }) {
+    const title = 'File:Fraueninsel Chiemsee Panorama.jpg';
+    let attempts = 0, received;
+    const pendingMetadata = new Promise(resolve => { received = resolve; });
+    await page.route('https://commons.wikimedia.org/w/api.php?**', route => {
+      const query = new URL(route.request().url()).searchParams;
+      if (query.get('prop') === 'images') {
+        attempts++;
+        return attempts === 1 ? route.fulfill({ status: 503, body: 'Unavailable' }) :
+          route.fulfill({ json: { query: { pages: [{ images: [{ title }] }] } } });
+      }
+      received(route);
+    });
+    await page.goto(origin + '/demo/index.html');
+    await page.waitForFunction(() => !document.getElementById('zoom-in').disabled);
+    await page.locator('#commons-browse').click();
+    await page.waitForFunction(() => document.getElementById('commons-browse').textContent === 'Retry Commons gallery' && !document.getElementById('commons-browse').disabled);
+    assert.equal(await page.locator('#scene-title').textContent(), 'Kloster Weltenburg');
+    await page.locator('#commons-browse').click();
+    await page.waitForFunction(() => !document.getElementById('commons-scene').disabled);
+    await page.locator('#commons-scene').selectOption(title);
+    const route = await pendingMetadata;
+    const canceled = page.waitForEvent('requestfailed', request => new URL(request.url()).searchParams.get('prop') === 'imageinfo');
+    await page.locator('[data-scene="weltenburg"]').click();
+    await canceled;
+    await route.fulfill({ json: metadata() });
+    assert.equal(await page.locator('#commons-scene').inputValue(), '');
+    assert.equal(await page.locator('#commons-scene').getAttribute('aria-busy'), null);
+    assert.equal(await page.locator('#scene-title').textContent(), 'Kloster Weltenburg');
+    assert.equal(await page.locator('#loading-state').getAttribute('class'), 'loading-state is-hidden');
+    assert.equal(await page.locator('#notice').textContent(), '');
+  }
+});
+
 module.exports = { cases };

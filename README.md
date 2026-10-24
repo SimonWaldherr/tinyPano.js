@@ -15,7 +15,10 @@ npm run demo
 
 Open [the demo](http://localhost:8080/demo/) or
 [the tour editor](http://localhost:8080/generator/).
-Use HTTP(S), not `file://`.
+Use HTTP(S), not `file://`. The demo can browse
+[my Commons gallery](https://commons.wikimedia.org/wiki/User:SimonWaldherr/Pano).
+Selected panoramas load directly from Wikimedia without adding image files to
+this repository. Commons browsing requires an internet connection.
 
 ## Add a panorama to your website
 

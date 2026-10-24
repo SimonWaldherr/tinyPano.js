@@ -19,7 +19,7 @@
   <main class="shell">
     <section class="intro" aria-labelledby="headline">
       <div><p class="eyebrow">JAVASCRIPT PANORAMA VIEWER</p><h1 id="headline">360° panoramas<br>for the web.</h1></div>
-      <div class="intro-copy"><p>Explore the Weltenburg panorama, try the controls,<br>or open a photo from your device.</p><a class="intro-anchor" href="#get-started">Embed a panorama <span aria-hidden="true">↓</span></a></div>
+      <div class="intro-copy"><p>Explore panoramas from Wikimedia Commons,<br>try the controls or open a photo from your device.</p><a class="intro-anchor" href="#get-started">Embed a panorama <span aria-hidden="true">↓</span></a></div>
     </section>
 
     <section aria-label="Interactive panorama demo">
@@ -34,6 +34,14 @@
       <div class="viewer-toolbar">
         <div class="scene-options" role="group" aria-label="Choose a scene"><button class="scene-button is-active" type="button" data-scene="weltenburg" aria-pressed="true"><span class="scene-thumb thumb-abbey" aria-hidden="true"></span><span>Weltenburg</span></button><button class="scene-button" type="button" data-scene="danube" aria-pressed="false"><span class="scene-thumb thumb-danube" aria-hidden="true"></span><span>Danube gorge</span></button></div>
         <div class="viewer-options"><div class="zoom-buttons" role="group" aria-label="Zoom"><button class="utility-button zoom-button" id="zoom-in" type="button" aria-label="Zoom in" title="Zoom in" disabled>+</button><button class="utility-button zoom-button" id="zoom-out" type="button" aria-label="Zoom out" title="Zoom out" disabled>−</button></div><button class="utility-button" id="share" type="button" aria-label="Share this view" aria-controls="share-fallback" aria-expanded="false" aria-busy="false" disabled><svg aria-hidden="true" viewBox="0 0 20 20"><path d="m8 12 4-4m-6 2-2 2a3 3 0 0 0 4 4l2-2m0-8 2-2a3 3 0 0 1 4 4l-2 2"/></svg><span>Share view</span></button><button class="utility-button" id="gyro" type="button" aria-label="Toggle gyroscope" aria-pressed="false" hidden><svg aria-hidden="true" viewBox="0 0 20 20"><rect x="5" y="2" width="10" height="16" rx="2"/><path d="M8 15h4m-9-9L1 9l2 3m14-6 2 3-2 3"/></svg><span>Gyroscope</span></button><button class="utility-button" id="rotate" type="button" aria-pressed="false"><svg aria-hidden="true" viewBox="0 0 20 20"><path d="M16.7 7A7 7 0 1 0 17 12M17 3v5h-5"/></svg><span>Auto rotate</span></button><span class="toolbar-divider" aria-hidden="true"></span><label class="renderer-label" for="renderer">Renderer</label><select id="renderer" aria-label="Rendering backend"><option value="auto">Auto (GPU)</option><option value="canvas">Canvas 2D</option></select></div>
+      </div>
+
+      <div class="commons-gallery" aria-label="Wikimedia Commons panoramas">
+        <button id="commons-browse" class="utility-button" type="button">Browse Commons panoramas</button>
+        <label for="commons-scene">Panorama</label>
+        <select id="commons-scene" disabled><option value="">Load the gallery to choose a panorama</option></select>
+        <a class="text-link" href="https://commons.wikimedia.org/wiki/User:SimonWaldherr/Pano" target="_blank" rel="noopener noreferrer">SimonWaldherr’s gallery ↗</a>
+        <small>Images load directly from Wikimedia Commons when selected.</small>
       </div>
 
       <div class="highlights" id="highlights" role="group" aria-label="Panorama highlights"></div>
@@ -68,6 +76,7 @@
     <footer class="footer"><span>tinyPano.js <span class="footer-dot">·</span> MIT licensed</span><span>Weltenburg panorama <span class="footer-dot">·</span> Demo image included</span></footer>
   </main>
   <script src="../dist/tinyPano.min.js"></script>
+  <script src="../generator/commons.js"></script>
   <script src="demo.js"></script>
 </body>
 </html>

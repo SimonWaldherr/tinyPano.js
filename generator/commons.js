@@ -44,7 +44,7 @@
     return url.href;
   }
 
-  async function load(input, options) {
+  async function resolveOrLoad(input, options, download) {
     options = options || {};
     var title = fileTitle(input);
     var width = Number(options.width || 3840);
@@ -79,26 +79,28 @@
       var mime = preview ? info.thumbmime || info.mime : info.mime;
       if (!/^image\/(jpeg|png|webp|avif|gif|bmp)$/.test(mime)) throw new Error('Bitte ein unterstütztes Rasterbild auf Commons wählen.');
       var panorama = imageURL(preview ? info.thumburl : info.url);
-      response = await fetch(panorama, request);
-      if (!response.ok) throw new Error('Das Commons-Bild konnte nicht geladen werden (HTTP ' + response.status + ').');
-      var length = Number(response.headers.get('content-length'));
-      if (length > maxBytes) { if (response.body) await response.body.cancel(); throw new Error('Das Commons-Bild überschreitet die verbleibende Speichergrenze.'); }
       var blob;
-      if (response.body && response.body.getReader) {
-        var reader = response.body.getReader(), chunks = [], size = 0;
-        try {
-          while (true) {
-            var part = await reader.read();
-            if (part.done) break;
-            size += part.value.byteLength;
-            if (size > maxBytes) throw new Error('Das Commons-Bild überschreitet die verbleibende Speichergrenze.');
-            chunks.push(part.value);
-          }
-          blob = new Blob(chunks, { type: mime });
-        } catch (error) { await reader.cancel().catch(function () {}); throw error; }
-        finally { reader.releaseLock(); }
-      } else { blob = await response.blob(); }
-      if (!blob.size || blob.size > maxBytes) throw new Error('Die Commons-Bilddatei ist leer oder zu groß.');
+      if (download) {
+        response = await fetch(panorama, request);
+        if (!response.ok) throw new Error('Das Commons-Bild konnte nicht geladen werden (HTTP ' + response.status + ').');
+        var length = Number(response.headers.get('content-length'));
+        if (length > maxBytes) { if (response.body) await response.body.cancel(); throw new Error('Das Commons-Bild überschreitet die verbleibende Speichergrenze.'); }
+        if (response.body && response.body.getReader) {
+          var reader = response.body.getReader(), chunks = [], size = 0;
+          try {
+            while (true) {
+              var part = await reader.read();
+              if (part.done) break;
+              size += part.value.byteLength;
+              if (size > maxBytes) throw new Error('Das Commons-Bild überschreitet die verbleibende Speichergrenze.');
+              chunks.push(part.value);
+            }
+            blob = new Blob(chunks, { type: mime });
+          } catch (error) { await reader.cancel().catch(function () {}); throw error; }
+          finally { reader.releaseLock(); }
+        } else { blob = await response.blob(); }
+        if (!blob.size || blob.size > maxBytes) throw new Error('Die Commons-Bilddatei ist leer oder zu groß.');
+      }
       var metadata = info.extmetadata || {};
       function field(key) { return plain(metadata[key] && metadata[key].value); }
       var canonical = page.title || title;
@@ -114,5 +116,9 @@
       throw error;
     } finally { clearTimeout(timer); if (options.signal) options.signal.removeEventListener('abort', cancel); }
   }
-  root.tinyPanoCommons = { fileTitle: fileTitle, load: load };
+  root.tinyPanoCommons = {
+    fileTitle: fileTitle,
+    resolve: function (input, options) { return resolveOrLoad(input, options, false); },
+    load: function (input, options) { return resolveOrLoad(input, options, true); }
+  };
 }(window));

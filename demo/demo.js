@@ -16,6 +16,8 @@
   var shareTicket = 0;
   var shareInstruction = 'Select and copy the link to this view.';
   var $ = function (id) { return document.getElementById(id); };
+  var commonsRequest = null;
+  var galleryRequest = null;
   var sceneButtons = document.querySelectorAll('[data-scene]');
   var highlights = [
     { id: 'abbey-detail', pitch: -18, yaw: 8, targetHfov: 65, text: 'Weltenburg Abbey', highlight: true },
@@ -39,6 +41,103 @@
       hotSpots: [{ id: 'abbey', pitch: -18, yaw: 8, type: 'scene', sceneId: 'weltenburg', text: 'Back to the abbey' }].concat(highlights)
     }
   };
+
+  function cancelCommons() {
+    if (commonsRequest) commonsRequest.abort();
+    commonsRequest = null;
+    $('commons-scene').removeAttribute('aria-busy');
+  }
+
+  function sharedCommonsTitle() {
+    try {
+      if (window.location.hash.indexOf('#tp=') !== 0) return null;
+      var state = JSON.parse(decodeURIComponent(window.location.hash.slice(4)));
+      return typeof state.sceneId === 'string' && state.sceneId.indexOf('commons:File:') === 0 ? state.sceneId.slice(8) : null;
+    } catch (_) { return null; }
+  }
+
+  function commonsOption(title, label) {
+    var select = $('commons-scene');
+    for (var i = 0; i < select.options.length; i++) if (select.options[i].value === title) return;
+    var option = document.createElement('option');
+    option.value = title;
+    option.textContent = label || title.replace(/^File:/, '').replace(/_/g, ' ').replace(/\.[^.]+$/, '');
+    select.appendChild(option);
+  }
+
+  async function browseCommons() {
+    if (galleryRequest) return;
+    var controller = galleryRequest = new AbortController();
+    var timer = window.setTimeout(function () { controller.abort(); }, 30000);
+    $('commons-browse').disabled = true;
+    $('commons-browse').textContent = 'Loading gallery…';
+    try {
+      var titles = [], next = null;
+      do {
+        var api = new URL('https://commons.wikimedia.org/w/api.php');
+        var params = { action: 'query', format: 'json', formatversion: '2', origin: '*', prop: 'images',
+          titles: 'User:SimonWaldherr/Pano', imlimit: 'max' };
+        if (next) Object.keys(next).forEach(function (key) { params[key] = next[key]; });
+        Object.keys(params).forEach(function (key) { api.searchParams.set(key, params[key]); });
+        var response = await fetch(api.href, { signal: controller.signal, credentials: 'omit', referrerPolicy: 'no-referrer' });
+        if (!response.ok) throw new Error('Gallery request failed.');
+        var data = await response.json();
+        var page = data.query && data.query.pages && data.query.pages[0];
+        if (data.error || !page || page.missing) throw new Error('Gallery unavailable.');
+        (page.images || []).forEach(function (image) {
+          if (/^File:.+\.(jpe?g|png|webp|avif|gif|bmp)$/i.test(image.title)) titles.push(image.title);
+        });
+        next = data.continue;
+      } while (next && titles.length < 5000);
+      if (!titles.length) throw new Error('No panoramas found.');
+      titles.sort().forEach(function (title) { commonsOption(title); });
+      $('commons-scene').options[0].textContent = 'Choose a Commons panorama';
+      $('commons-scene').disabled = false;
+      $('commons-browse').textContent = 'Refresh Commons gallery';
+      notice('Gallery ready. Choose a panorama to load it directly from Wikimedia Commons.');
+    } catch (_) {
+      $('commons-browse').textContent = 'Retry Commons gallery';
+      notice('The Commons gallery could not be loaded. Please try again; the current panorama remains available.');
+    } finally {
+      window.clearTimeout(timer);
+      galleryRequest = null;
+      $('commons-browse').disabled = false;
+    }
+  }
+
+  async function openCommons(title, restoreURL) {
+    if (!title) return;
+    cancelCommons();
+    invalidateShare();
+    var generation = ++fileGeneration;
+    var controller = commonsRequest = new AbortController();
+    $('commons-scene').setAttribute('aria-busy', 'true');
+    notice('Looking up the Commons panorama…');
+    try {
+      var image = await tinyPanoCommons.resolve('https://commons.wikimedia.org/wiki/' + encodeURIComponent(title), { signal: controller.signal });
+      if (controller.signal.aborted || generation !== fileGeneration) return;
+      var id = 'commons:' + title;
+      var scene = { panorama: image.panorama, title: image.title, yaw: 0, pitch: 0, hfov: 100, commons: image };
+      scenes[id] = scene;
+      if (viewer && currentScene !== 'local') viewer.addScene(id, scene);
+      commonsOption(title, image.title);
+      $('commons-scene').disabled = false;
+      chooseScene(id, restoreURL);
+      notice('Loading the Commons panorama…');
+    } catch (error) {
+      if (generation !== fileGeneration || error.name === 'AbortError') return;
+      $('commons-scene').value = currentScene.indexOf('commons:') === 0 ? currentScene.slice(8) : '';
+      notice('This Commons panorama could not be opened. Please try again or choose another image.');
+    } finally {
+      if (commonsRequest === controller) {
+        commonsRequest = null;
+        $('commons-scene').removeAttribute('aria-busy');
+      }
+    }
+  }
+
+  $('commons-browse').addEventListener('click', browseCommons);
+  $('commons-scene').addEventListener('change', function () { openCommons(this.value, false); });
 
   function notice(message) {
     window.clearTimeout(noticeTimer);
@@ -122,12 +221,37 @@
     $('scene-title').textContent = id === 'local' ? localName : scenes[id].title;
     $('scene-eyebrow').textContent = id === 'local' ? 'YOUR IMAGE / YOUR DEVICE' : id === 'danube' ? '02 / THE DANUBE GORGE' : '01 / KLOSTER WELTENBURG';
     $('scene-description').textContent = id === 'local' ? 'A new perspective. Nothing uploaded.' : 'Weltenburg Abbey and the Danube, Bavaria.';
-    $('photo-credit').hidden = id === 'local';
-    $('image-tag').textContent = id === 'local' ? 'LOCAL EQUIRECTANGULAR IMAGE' : '360° WELTENBURG PANORAMA';
-    $('resolution-stat').textContent = id === 'local' ? 'LOCAL IMAGE' : '3840 × 1920';
-    $('pano').setAttribute('aria-label', id === 'local' ? localName : scenes[id].title);
-    var list = $('highlights'); list.textContent = ''; list.hidden = id === 'local';
+    var remote = scenes[id] && scenes[id].commons;
+    $('commons-scene').value = remote ? id.slice(8) : '';
+    if (remote) {
+      $('scene-eyebrow').textContent = 'WIKIMEDIA COMMONS';
+      $('scene-description').textContent = 'From SimonWaldherr’s panorama gallery.';
+    }
+    var credit = $('photo-credit');
+    credit.textContent = '';
     if (id !== 'local') {
+      var author = remote ? remote.author : 'Simon Waldherr';
+      var attribution = remote ? remote.attribution : '';
+      credit.appendChild(document.createTextNode(author + (attribution && attribution !== author ? ' · ' + attribution : '')));
+      function creditLink(label, url) {
+        if (!/^https?:\/\//i.test(url || '')) return;
+        credit.appendChild(document.createTextNode(' · '));
+        var link = document.createElement('a'); link.textContent = label; link.href = url;
+        link.target = '_blank'; link.rel = 'noopener noreferrer'; credit.appendChild(link);
+      }
+      var license = remote ? remote.license : 'CC BY-SA 4.0';
+      var licenseURL = remote ? remote.licenseURL : 'https://creativecommons.org/licenses/by-sa/4.0/';
+      if (/^https?:\/\//i.test(licenseURL || '')) creditLink(license, licenseURL);
+      else if (license) credit.appendChild(document.createTextNode(' · ' + license));
+      creditLink('Image source', remote ? remote.sourceURL : 'https://commons.wikimedia.org/wiki/File:Kloster_Weltenburg_Panorama.jpg');
+      credit.appendChild(document.createTextNode(' · resized'));
+    }
+    credit.hidden = id === 'local';
+    $('image-tag').textContent = id === 'local' ? 'LOCAL EQUIRECTANGULAR IMAGE' : remote ? '360° COMMONS PANORAMA' : '360° WELTENBURG PANORAMA';
+    $('resolution-stat').textContent = id === 'local' ? 'LOCAL IMAGE' : remote ? remote.width + ' × ' + remote.height : '3840 × 1920';
+    $('pano').setAttribute('aria-label', id === 'local' ? localName : scenes[id].title);
+    var list = $('highlights'); list.textContent = ''; list.hidden = id === 'local' || !!remote;
+    if (id !== 'local' && !remote) {
       var label = document.createElement('span'); label.className = 'highlights-label'; label.textContent = 'Highlights';
       list.appendChild(label);
       highlights.forEach(function (spot) {
@@ -266,14 +390,19 @@
     rotationUI();
   }
 
-  function chooseScene(id) {
+  function chooseScene(id, restoreURL) {
     if (!scenes[id]) return;
+    cancelCommons();
     fileGeneration++;
-    if (requestedScene === id) return;
+    if (requestedScene === id && !restoreURL) {
+      $('commons-scene').value = currentScene.indexOf('commons:') === 0 ? currentScene.slice(8) : '';
+      notice('');
+      return;
+    }
     var hadLocalImage = currentScene === 'local';
     requestedScene = id;
     setLoading('Changing the view…');
-    if (hadLocalImage || !viewer) createViewer(false, id);
+    if (hadLocalImage || !viewer || restoreURL) createViewer(false, id, restoreURL);
     else {
       try { viewer.loadScene(id); } catch (error) { setError(error); }
     }
@@ -292,7 +421,7 @@
   $('zoom-in').addEventListener('click', function () { if (viewer) viewer.zoomIn(); });
   $('zoom-out').addEventListener('click', function () { if (viewer) viewer.zoomOut(); });
 
-  $('renderer').addEventListener('change', function () { createViewer(true); });
+  $('renderer').addEventListener('change', function () { cancelCommons(); fileGeneration++; createViewer(true); });
   $('share').addEventListener('click', function () {
     if (!viewer || !viewer.isLoaded() || currentScene === 'local') return;
     invalidateShare();
@@ -372,6 +501,7 @@
 
   function openFile(file) {
     if (!file) return;
+    cancelCommons();
     invalidateShare();
     var generation = ++fileGeneration;
     if (file.type && file.type.indexOf('image/') !== 0) {
@@ -436,15 +566,22 @@
     if (!viewer || window.location.hash.indexOf('#tp=') !== 0) return;
     invalidateShare();
     fileGeneration++;
+    cancelCommons();
+    var title = sharedCommonsTitle();
+    if (title) { openCommons(title, true); return; }
     if (currentScene === 'local') createViewer(false, 'weltenburg', true);
     else viewer.loadViewURL();
   });
   window.addEventListener('beforeunload', function () {
     invalidateShare();
     fileGeneration++;
+    cancelCommons();
+    if (galleryRequest) galleryRequest.abort();
     window.clearTimeout(viewUpdateTimer);
     if (viewer) viewer.destroy();
   });
   setSceneUI(currentScene);
-  createViewer(false, currentScene, true);
+  var sharedTitle = sharedCommonsTitle();
+  createViewer(false, currentScene, !sharedTitle);
+  if (sharedTitle) openCommons(sharedTitle, true);
 }());

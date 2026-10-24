@@ -468,6 +468,31 @@ h1 {
   gap: 18px;
 }
 
+.commons-gallery {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 16px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.commons-gallery select {
+  flex: 1 1 240px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: #fff;
+  font: inherit;
+}
+
+.commons-gallery small {
+  flex-basis: 100%;
+  color: var(--muted, #74796c);
+}
+
 .scene-options {
   display: flex;
   gap: 8px;
