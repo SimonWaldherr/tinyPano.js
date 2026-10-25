@@ -178,7 +178,9 @@
       var yaw = Math.round(viewer.getYaw());
       $('camera-stat').title = 'Yaw ' + yaw + '° · Pitch ' + Math.round(viewer.getPitch()) + '°';
       $('zoom-in').disabled = !viewer.isLoaded() || viewer.getHfov() <= 30.001;
-      $('zoom-out').disabled = !viewer.isLoaded() || viewer.getHfov() >= 119.999;
+      var mode = viewer.getViewMode();
+      var maxHfov = mode === 'normal' ? 120 : mode === 'fisheye' ? 240 : 330;
+      $('zoom-out').disabled = !viewer.isLoaded() || viewer.getHfov() >= maxHfov - 0.001;
     } catch (ignore) {}
   }
 
@@ -385,6 +387,12 @@
           setError(error);
         }
       });
+      viewer.on('viewmodechange', function (event) {
+        if (generation !== activeGeneration) return;
+        $('view-mode').value = event.viewMode;
+        invalidateShare(); updateCamera();
+      });
+      viewer.setViewMode($('view-mode').value);
       if (restoreURL) viewer.loadViewURL();
     } catch (error) { setError(error); }
     rotationUI();
@@ -421,6 +429,7 @@
   $('zoom-in').addEventListener('click', function () { if (viewer) viewer.zoomIn(); });
   $('zoom-out').addEventListener('click', function () { if (viewer) viewer.zoomOut(); });
 
+  $('view-mode').addEventListener('change', function () { if (viewer) viewer.setViewMode(this.value); });
   $('renderer').addEventListener('change', function () { cancelCommons(); fileGeneration++; createViewer(true); });
   $('share').addEventListener('click', function () {
     if (!viewer || !viewer.isLoaded() || currentScene === 'local') return;

@@ -10,7 +10,7 @@ const { chromium } = require('playwright');
 const root = path.resolve(__dirname, '..');
 
 function argumentsFrom(argv) {
-  const options = { runs: 5, baseline: null, software: false, scenario: null, renderer: null, output: 'test-results/zoom-benchmark.json' };
+  const options = { runs: 5, baseline: null, baselineDir: null, viewMode: 'normal', software: false, scenario: null, renderer: null, output: 'test-results/zoom-benchmark.json' };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--software') options.software = true;
     else if (argv[i] === '--scenario') {
@@ -21,6 +21,14 @@ function argumentsFrom(argv) {
       options.renderer = argv[++i];
       if (!['canvas', 'webgl'].includes(options.renderer)) throw new Error('--renderer must be canvas or webgl.');
     }
+    else if (argv[i] === '--baseline-dir') {
+      options.baselineDir = argv[++i];
+      if (!options.baselineDir || options.baselineDir.startsWith('--')) throw new Error('--baseline-dir requires a source directory.');
+    }
+    else if (argv[i] === '--view-mode') {
+      options.viewMode = argv[++i];
+      if (!['normal', 'tinyplanet', 'tunnel', 'fisheye'].includes(options.viewMode)) throw new Error('Invalid --view-mode.');
+    }
     else if (argv[i] === '--runs') options.runs = Number(argv[++i]);
     else if (argv[i] === '--baseline') {
       options.baseline = argv[++i];
@@ -30,7 +38,8 @@ function argumentsFrom(argv) {
     else throw new Error('Unknown argument: ' + argv[i]);
   }
   if (!Number.isInteger(options.runs) || options.runs < 1 || options.runs > 30 || !options.output) throw new Error('Use --runs 1–30 and a valid --output path.');
-  if (options.scenario && !['trackpad', 'burst', 'button', 'render', 'render-tilted'].includes(options.scenario)) throw new Error('Invalid --scenario.');
+  if (options.scenario && !['trackpad', 'burst', 'button', 'render', 'render-tilted', 'pan'].includes(options.scenario)) throw new Error('Invalid --scenario.');
+  if (options.baseline && options.baselineDir) throw new Error('Choose --baseline or --baseline-dir.');
   return options;
 }
 function git(...args) { return execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim(); }
@@ -40,10 +49,10 @@ function percentile(values, p) {
 }
 function bundle(source) { return '(function () { var VERSION="benchmark";\n' + source + '\nreturn {viewer:function(target,options){return new Viewer(target,options);}}; }())'; }
 
-async function sample(page, variant, renderer, scenario) {
-  return page.evaluate(async ({ variant, renderer, scenario }) => {
+async function sample(page, variant, renderer, scenario, viewMode) {
+  return page.evaluate(async ({ variant, renderer, scenario, viewMode }) => {
     const frame = () => new Promise(requestAnimationFrame);
-    const v = window[variant].viewer('pano', { panorama: window.panorama, renderer, hfov: 100, maxDpr: 1, maxPixels: 960 * 480 });
+    const v = window[variant].viewer('pano', { panorama: window.panorama, renderer, viewMode, maxDpr: 1, maxPixels: 960 * 480 });
     let errors = [];
     v.on('error', error => errors.push(error.message));
     async function idle() {
@@ -54,9 +63,11 @@ async function sample(page, variant, renderer, scenario) {
       const deadline = performance.now() + 10000;
       while (!v.isLoaded() || !v.getStats().frames) { if (errors.length || performance.now() > deadline) throw new Error(errors.join('; ') || 'Panorama load timed out'); await frame(); }
       if (v.getRenderer() !== renderer) throw new Error('Unexpected renderer fallback');
+      if (viewMode !== 'normal' && (!v.getViewMode || v.getViewMode() !== viewMode)) throw new Error('This source version does not support the requested display mode.');
+      const startHfov = v.getHfov(), startYaw = v.getYaw();
       // Warm texture upload, pixel buffers, event handlers and render paths before timing.
-      if (scenario === 'render-tilted') { v.lookAt(15, 30, 100, 0); await idle(); }
-      for (let warm = 0; warm < 8; warm++) { v.setHfov(warm % 2 ? 100 : 90, 0); await idle(); }
+      if (scenario === 'render-tilted') { v.lookAt(15, 30, startHfov, 0); await idle(); }
+      for (let warm = 0; warm < 8; warm++) { v.setHfov(warm % 2 ? startHfov : startHfov - 10, 0); await idle(); }
       const canvas = document.querySelector('#pano canvas');
       const gl = renderer === 'webgl' ? canvas.getContext('webgl') : null;
       const debug = gl && gl.getExtension('WEBGL_debug_renderer_info');
@@ -72,7 +83,7 @@ async function sample(page, variant, renderer, scenario) {
       v.on('viewchange', () => {
         const now = performance.now(); frameTimes.push(now);
         if (firstFrameHfov === null) firstFrameHfov = v.getHfov();
-        if (Math.abs(v.getHfov() - 100) > 0.01) {
+        if (Math.abs(v.getHfov() - startHfov) > 0.01 || (scenario === 'pan' && Math.abs(v.getYaw() - startYaw) > 0.01)) {
           if (firstFeedback === null) firstFeedback = now - start;
           lastFeedback = now;
         }
@@ -90,9 +101,11 @@ async function sample(page, variant, renderer, scenario) {
           if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay));
           wheel(-2);
         }
-      } else if (scenario === 'render' || scenario === 'render-tilted') {
+      } else if (scenario === 'render' || scenario === 'render-tilted' || scenario === 'pan') {
         for (let i = 0; i < 60; i++) {
-          const begin = performance.now(); v.setHfov(100 - 60 * Math.sin(Math.PI * i / 59), 0);
+          const begin = performance.now();
+          if (scenario === 'pan') v.lookAt(v.getPitch(), startYaw + i * 2, startHfov, 0);
+          else v.setHfov(startHfov - 60 * Math.sin(Math.PI * i / 59), 0);
           handlingMs += performance.now() - begin; inputs++; lastInput = performance.now(); await idle();
         }
       } else if (scenario === 'burst') {
@@ -107,12 +120,12 @@ async function sample(page, variant, renderer, scenario) {
       const frames = v.getStats().frames - startFrames, idleFrames = v.getStats().frames;
       await new Promise(resolve => setTimeout(resolve, 80));
       const intervals = frameTimes.slice(1).map((time, i) => time - frameTimes[i]);
-      return { variant, renderer, scenario, inputs, inputDurationMs, handlingMs, firstFeedbackMs: firstFeedback,
+      return { variant, renderer, scenario, viewMode, startHfov, inputs, inputDurationMs, handlingMs, firstFeedbackMs: firstFeedback,
         firstFrameHfov, inputEndHfov, finalHfov: v.getHfov(), settleAfterInputMs: Math.max(0, (lastFeedback || lastInput) - lastInput),
         frames, idleFrames: v.getStats().frames - idleFrames, renderCpuMs: cpu, frameIntervalsMs: intervals,
         device, canvas: { width: canvas.width, height: canvas.height }, texture: { width: v.getStats().textureWidth, height: v.getStats().textureHeight } };
     } finally { v.destroy(); }
-  }, { variant, renderer, scenario });
+  }, { variant, renderer, scenario, viewMode });
 }
 
 async function main() {
@@ -121,6 +134,7 @@ async function main() {
   const sources = { current: names.map(name => fs.readFileSync(path.join(root, 'src', name), 'utf8')).join('\n') };
   const baseline = options.baseline ? git('rev-parse', '--verify', '--end-of-options', options.baseline + '^{commit}') : null;
   if (baseline) sources.baseline = names.map(name => git('show', baseline + ':src/' + name)).join('\n');
+  if (options.baselineDir) sources.baseline = names.map(name => fs.readFileSync(path.resolve(options.baselineDir, 'src', name), 'utf8')).join('\n');
   const variants = Object.keys(sources);
   const renderers = options.renderer ? [options.renderer] : ['webgl', 'canvas'];
   const scenarios = options.scenario ? [options.scenario] : ['trackpad', 'burst', 'button', 'render'];
@@ -149,9 +163,9 @@ async function main() {
     const results = [];
     for (const renderer of renderers) for (const scenario of scenarios) {
       // One discarded trial per variant, followed by alternating order to reduce warm-up/order bias.
-      for (const variant of variants) await sample(page, variant, renderer, scenario);
+      for (const variant of variants) await sample(page, variant, renderer, scenario, options.viewMode);
       for (let run = 0; run < options.runs; run++) for (const variant of run % 2 ? variants.slice().reverse() : variants) {
-        const result = await sample(page, variant, renderer, scenario);
+        const result = await sample(page, variant, renderer, scenario, options.viewMode);
         if (result.firstFeedbackMs === null || result.idleFrames !== 0) throw new Error('Missing zoom response or rendering did not stop');
         results.push({ run: run + 1, ...result });
       }
@@ -168,10 +182,10 @@ async function main() {
         renderCpuMeanMs: renderTimes.reduce((total, time) => total + time, 0) / renderTimes.length,
         renderCpuP95Ms: percentile(renderTimes, 0.95), frameIntervalP95Ms: percentile(rows.flatMap(row => row.frameIntervalsMs), 0.95) });
     }
-    const report = { createdAt: new Date().toISOString(), baseline, runs: options.runs,
+    const report = { createdAt: new Date().toISOString(), baseline, baselineDirectory: options.baselineDir ? path.resolve(options.baselineDir) : null, viewMode: options.viewMode, runs: options.runs,
       environment: { browser: browser.version(), platform: os.platform(), arch: os.arch(), cpu: os.cpus()[0].model, softwareRequested: options.software, device: results[0].device },
-      methodology: { input: 'Synthetic DOM wheel events: 60 × -2 px at 120 Hz; burst: 100 × -1 px in one task; button: one native DOM click; render: identical 60-frame 100°–40°–100° FOV sweep through setHfov(…, 0); optional render-tilted repeats it with pitch 15° and yaw 30°.',
-        timing: 'performance.now; feedback is the first viewchange after rendering with >0.01° FOV change. CPU render time includes command submission, not GPU completion or screen presentation.',
+      methodology: { input: 'Synthetic DOM wheel events: 60 × -2 px at 120 Hz; burst: 100 × -1 px in one task; button: one native DOM click; render: identical 60-frame initial FOV → initial FOV minus 60° → initial FOV sweep through setHfov(…, 0); optional render-tilted repeats it with pitch 15° and yaw 30°; pan changes yaw by 2° per frame at fixed FOV.',
+        timing: 'performance.now; feedback is the first viewchange after rendering with >0.01° FOV change (yaw change for pan). CPU render time includes command submission, not GPU completion or screen presentation.',
         warmup: 'One discarded trial per renderer/scenario/version; each trial also warms eight frames at two zoom levels and at the measured camera tilt. Source decoding and texture upload excluded.',
         viewport: '960 × 480, DPR 1; 3840 × 1920 JPEG; default Canvas fallback resolution.', summary: 'Median of trials; CPU mean and CPU/frame p95 pooled across trials; idle checked for 80 ms. No timing thresholds; no external network requests.' },
       sourceSha256: Object.fromEntries(variants.map(name => [name, crypto.createHash('sha256').update(sources[name]).digest('hex')])), summary, results };

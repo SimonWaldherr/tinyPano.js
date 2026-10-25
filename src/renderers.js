@@ -42,6 +42,27 @@ function tpProjection(config) {
     return 0;
 }
 
+// Display lenses are independent of the panorama's source projection.
+function tpCameraMode(mode) {
+    return mode === 'tinyplanet' || mode === 'tunnel' ? 1 : mode === 'fisheye' ? 2 : 0;
+}
+function tpCameraScale(hfov, lens) {
+    return lens === 2 ? hfov * Math.PI / 360 : Math.tan(hfov * Math.PI / (lens === 1 ? 720 : 360));
+}
+function tpCameraFov(scale, lens) {
+    return lens === 2 ? scale * 360 / Math.PI : Math.atan(scale) * (lens === 1 ? 720 : 360) / Math.PI;
+}
+function tpLensRay(x, y, lens, out) {
+    if (lens === 1) { out[0] = 2 * x; out[1] = 2 * y; out[2] = 1 - x * x - y * y; }
+    else if (lens === 2) {
+        var angle = Math.sqrt(x * x + y * y);
+        if (angle > Math.PI) return false;
+        var scale = angle > 0.0000001 ? Math.sin(angle) / angle : 1;
+        out[0] = x * scale; out[1] = y * scale; out[2] = Math.cos(angle);
+    } else { out[0] = x; out[1] = y; out[2] = 1; }
+    return true;
+}
+
 function tpPixelRatio(value, options) {
     value = Number(value);
     var cap = Number(options.maxDpr);
@@ -99,7 +120,13 @@ function tpPrepareSources(images, config, limit, doc, readPixels) {
                 context.drawImage(images[i], 0, 0, width, height);
                 if (width < size.width || height < size.height) { downscaled = true; }
                 if (readPixels) {
-                    buffers.push({ data: context.getImageData(0, 0, width, height).data, width: width, height: height });
+                    var pixels = context.getImageData(0, 0, width, height).data, opaque = true;
+                    // Detect once at readback so opaque photos need no alpha
+                    // sampling or interpolation per frame.
+                    for (var pixel = 3; pixel < pixels.length; pixel += 4) {
+                        if (pixels[pixel] !== 255) { opaque = false; break; }
+                    }
+                    buffers.push({ data: pixels, width: width, height: height, opaque: opaque });
                     source.width = source.height = 1;
                 }
             }
@@ -155,7 +182,7 @@ function tpWebGLRenderer(canvas, gl, options) {
         'precision ' + precision + ' float;',
         'uniform vec2 uResolution;',
         'uniform vec2 uYaw; uniform vec2 uPitch;',
-        'uniform float uTanHalfFov; uniform float uCube; uniform float uProjection; uniform float uRoll;',
+        'uniform float uTanHalfFov; uniform float uCube; uniform float uProjection; uniform float uRoll; uniform float uLens;',
         'uniform vec3 uCoverage; uniform vec2 uOffsets; uniform vec3 uBackground;',
         'uniform float uTextureWidth;',
         'uniform sampler2D uImage0; uniform sampler2D uImage1; uniform sampler2D uImage2;',
@@ -186,7 +213,10 @@ function tpWebGLRenderer(canvas, gl, options) {
         'uv=vec2(d.x,-d.z)/a.y;return texture2D(uImage5,uv*0.5+0.5);}',
         'void main(){',
         'vec2 q=(gl_FragCoord.xy/uResolution)*2.0-1.0;',
-        'vec3 r=vec3(q.x*uTanHalfFov,q.y*uTanHalfFov*uResolution.y/uResolution.x,1.0);',
+        'vec2 plane=vec2(q.x,q.y*uResolution.y/uResolution.x)*uTanHalfFov;',
+        'vec3 r=vec3(plane,1.0);',
+        'if(uLens>0.5&&uLens<1.5){float rr=dot(plane,plane);r=vec3(2.0*plane,1.0-rr)/(1.0+rr);}',
+        'else if(uLens>1.5){float a=length(plane);if(a>3.14159265359){gl_FragColor=vec4(uBackground,1.0);return;}r=vec3(plane*(a>0.0000001?sin(a)/a:1.0),cos(a));}',
         'float cr=cos(uRoll); float sr=sin(uRoll); r.xy=mat2(cr,-sr,sr,cr)*r.xy;',
         /* Pitch first, then yaw: forward is +Z, right is +X, up is +Y. */
         'vec3 p=vec3(r.x,r.y*uPitch.x+r.z*uPitch.y,r.z*uPitch.x-r.y*uPitch.y);',
@@ -236,7 +266,7 @@ function tpWebGLRenderer(canvas, gl, options) {
         var attribute = gl.getAttribLocation(program, 'aPosition');
         gl.enableVertexAttribArray(attribute);
         gl.vertexAttribPointer(attribute, 2, gl.FLOAT, false, 0, 0);
-        var uniforms = ['uResolution', 'uYaw', 'uPitch', 'uTanHalfFov', 'uCube', 'uProjection', 'uRoll', 'uCoverage', 'uOffsets', 'uBackground', 'uTextureWidth'];
+        var uniforms = ['uResolution', 'uYaw', 'uPitch', 'uTanHalfFov', 'uCube', 'uProjection', 'uRoll', 'uCoverage', 'uOffsets', 'uBackground', 'uTextureWidth', 'uLens'];
         for (var i = 0; i < uniforms.length; i++) { locations[uniforms[i]] = gl.getUniformLocation(program, uniforms[i]); }
         for (i = 0; i < 6; i++) { gl.uniform1i(gl.getUniformLocation(program, 'uImage' + i), i); }
         gl.disable(gl.DEPTH_TEST);
@@ -340,7 +370,8 @@ function tpWebGLRenderer(canvas, gl, options) {
             gl.useProgram(program);
             gl.uniform2f(locations.uYaw, Math.cos(yaw), Math.sin(yaw));
             gl.uniform2f(locations.uPitch, Math.cos(pitch), Math.sin(pitch));
-            gl.uniform1f(locations.uTanHalfFov, Math.tan(view.hfov * radians / 2));
+            gl.uniform1f(locations.uTanHalfFov, tpCameraScale(view.hfov, tpCameraMode(view.viewMode)));
+            gl.uniform1f(locations.uLens, tpCameraMode(view.viewMode));
             gl.drawArrays(gl.TRIANGLES, 0, 3);
         },
         destroy: function () {
@@ -373,6 +404,7 @@ function tpCanvasRenderer(canvas, options) {
     var tileGeneration = 0;
     var tileScratch = {};
     var levelColumns = null, levelTangent = null;
+    var cameraRays = null, cameraRayKey = null, cameraRaysReady = false;
 
     function tileUrl(multi, levelIndex, x, y) {
         var level = multi.levels[levelIndex];
@@ -469,14 +501,17 @@ function tpCanvasRenderer(canvas, options) {
     }
     function mapRay(view, nx, ny) {
         var rad = Math.PI / 180;
-        var tangent = Math.tan(view.hfov * rad / 2);
+        var lens = tpCameraMode(view.viewMode), tangent = tpCameraScale(view.hfov, lens);
         var rx = (2 * nx - 1) * tangent;
         var ry = (1 - 2 * ny) * tangent * canvas.height / canvas.width;
+        var ray = [0, 0, 1];
+        if (!tpLensRay(rx, ry, lens, ray)) return { u: 0, v: -1 };
+        rx = ray[0]; ry = ray[1];
         var roll = (state.roll || 0), rolledX = rx * Math.cos(roll) + ry * Math.sin(roll);
         var rolledY = -rx * Math.sin(roll) + ry * Math.cos(roll);
         var pitch = view.pitch * rad, yaw = view.yaw * rad;
-        var py = rolledY * Math.cos(pitch) + Math.sin(pitch);
-        var pz = Math.cos(pitch) - rolledY * Math.sin(pitch);
+        var py = rolledY * Math.cos(pitch) + ray[2] * Math.sin(pitch);
+        var pz = ray[2] * Math.cos(pitch) - rolledY * Math.sin(pitch);
         var x = rolledX * Math.cos(yaw) + pz * Math.sin(yaw);
         var y = py;
         var z = pz * Math.cos(yaw) - rolledX * Math.sin(yaw);
@@ -561,6 +596,35 @@ function tpCanvasRenderer(canvas, options) {
         return false;
     }
 
+    function prepareFisheyeCache(width, height, lens, tangent, aspect) {
+        // Reuse exact fisheye radial factors only after an unchanged lens
+        // frame. Zoom and cheap lenses take the original direct code path.
+        if (lens !== 2 || width * height * 16 > 2097152) {
+            cameraRays = cameraRayKey = null; cameraRaysReady = false;
+            return false;
+        }
+        var key = width + ':' + height + ':' + tangent + ':' + aspect;
+        if (cameraRayKey !== key) {
+            cameraRayKey = key; cameraRaysReady = false;
+            return false;
+        }
+        if (!cameraRaysReady) {
+            if (!cameraRays || cameraRays.length !== width * height * 2) cameraRays = new Float64Array(width * height * 2);
+            var step = 2 * tangent / width, offset = 0;
+            for (var j = 0; j < height; j++) {
+                var y = (1 - 2 * (j + 0.5) / height) * tangent * aspect;
+                var x = -tangent + step * 0.5;
+                for (var i = 0; i < width; i++, x += step, offset += 2) {
+                    var angle = Math.sqrt(x * x + y * y);
+                    cameraRays[offset] = angle > Math.PI ? NaN : angle > 0.0000001 ? Math.sin(angle) / angle : 1;
+                    cameraRays[offset + 1] = angle > Math.PI ? 0 : Math.cos(angle);
+                }
+            }
+            cameraRaysReady = true;
+        }
+        return true;
+    }
+
     // At zero pitch/roll, longitude and horizontal source samples are shared
     // by every scanline. Keep this path separate so other projections retain
     // their original inner loop and avoid per-pixel fast-path branches.
@@ -618,7 +682,7 @@ function tpCanvasRenderer(canvas, options) {
                 row = iy * sourceWidth * 4; nextRow = iy1 * sourceWidth * 4; right = levelColumns[column + 3];
                 p00 = row + left; p10 = row + right; p01 = nextRow + left; p11 = nextRow + right;
                 fx = levelColumns[column + 4]; var oneMinusFx = levelColumns[column + 5];
-                alpha = ((pixels[p00 + 3] * oneMinusFx + pixels[p10 + 3] * fx) * (1 - fy) + (pixels[p01 + 3] * oneMinusFx + pixels[p11 + 3] * fx) * fy) / 255;
+                alpha = buffer.opaque ? 1 : ((pixels[p00 + 3] * oneMinusFx + pixels[p10 + 3] * fx) * (1 - fy) + (pixels[p01 + 3] * oneMinusFx + pixels[p11 + 3] * fx) * fy) / 255;
                 for (channel = 0; channel < 3; channel++) {
                     value = (pixels[p00 + channel] * oneMinusFx + pixels[p10 + channel] * fx) * (1 - fy) + (pixels[p01 + channel] * oneMinusFx + pixels[p11 + channel] * fx) * fy;
                     data[index + channel] = value * alpha + bg[channel] * (1 - alpha);
@@ -679,7 +743,8 @@ function tpCanvasRenderer(canvas, options) {
         render: function (view) {
             if (!state || destroyed) { return; }
             if (!output) { this.resize(canvas.width || 1, canvas.height || 1, 1); }
-            if (!state.cube && !state.multi && state.projection === 0 && view.pitch === 0 && state.roll === 0) {
+            if (!tpCameraMode(view.viewMode) && !state.cube && !state.multi && state.projection === 0 && view.pitch === 0 && state.roll === 0) {
+                cameraRays = cameraRayKey = null; cameraRaysReady = false;
                 renderLevel(view);
                 return;
             }
@@ -697,25 +762,45 @@ function tpCanvasRenderer(canvas, options) {
             var cyaw = Math.cos(yaw), syaw = Math.sin(yaw);
             var croll = Math.cos(state.roll), sroll = Math.sin(state.roll);
             var cpitch = Math.cos(pitch), spitch = Math.sin(pitch);
-            var tangent = Math.tan(view.hfov * rad / 2);
+            // Compose roll, pitch and yaw once per frame, rather than rotating
+            // each camera ray three times in the pixel loop.
+            var m00 = croll * cyaw + sroll * spitch * syaw, m01 = sroll * cyaw - croll * spitch * syaw, m02 = cpitch * syaw;
+            var m10 = -sroll * cpitch, m11 = croll * cpitch, m12 = spitch;
+            var m20 = sroll * spitch * cyaw - croll * syaw, m21 = -croll * spitch * cyaw - sroll * syaw, m22 = cpitch * cyaw;
+            var lens = tpCameraMode(view.viewMode), ray = lens ? [0, 0, 1] : null;
+            var tangent = tpCameraScale(view.hfov, lens);
             var step = 2 * tangent / width;
             var aspect = canvas.height / canvas.width;
+            var useRays = prepareFisheyeCache(width, height, lens, tangent, aspect);
             var bg = [state.background[0] * 255, state.background[1] * 255, state.background[2] * 255];
             var index = 0;
-            var j, i, ry, py, pz, rx, x, y, z, ax, ay, az, face, u, v, buffer;
+            var j, i, ry, rx, x, y, z, ax, ay, az, face, u, v, buffer;
             var sx, sy, ix, iy, ix1, iy1, fx, fy, p00, p10, p01, p11, channel, value, alpha;
             var wrap = !state.cube && state.haov >= Math.PI * 2 - 0.00001;
             for (j = 0; j < height; j++) {
                 ry = (1 - 2 * (j + 0.5) / height) * tangent * aspect;
                 rx = -tangent + step * 0.5;
                 for (i = 0; i < width; i++, index += 4, rx += step) {
-                    var rolledX = rx * croll + ry * sroll;
-                    var rolledY = -rx * sroll + ry * croll;
-                    py = rolledY * cpitch + spitch;
-                    pz = cpitch - rolledY * spitch;
-                    x = rolledX * cyaw + pz * syaw;
-                    y = py;
-                    z = pz * cyaw - rolledX * syaw;
+                    var rz = 1, cameraX = rx, cameraY = ry;
+                    if (lens) {
+                        if (useRays) {
+                            var rayOffset = index / 2, radial = cameraRays[rayOffset];
+                            if (radial !== radial) {
+                                data[index] = bg[0]; data[index + 1] = bg[1]; data[index + 2] = bg[2]; data[index + 3] = 255;
+                                continue;
+                            }
+                            cameraX = rx * radial; cameraY = ry * radial; rz = cameraRays[rayOffset + 1];
+                        } else {
+                            if (!tpLensRay(rx, ry, lens, ray)) {
+                                data[index] = bg[0]; data[index + 1] = bg[1]; data[index + 2] = bg[2]; data[index + 3] = 255;
+                                continue;
+                            }
+                            cameraX = ray[0]; cameraY = ray[1]; rz = ray[2];
+                        }
+                    }
+                    x = cameraX * m00 + cameraY * m01 + rz * m02;
+                    y = cameraX * m10 + cameraY * m11 + rz * m12;
+                    z = cameraX * m20 + cameraY * m21 + rz * m22;
                     face = 0;
                     if (state.cube) {
                         ax = Math.abs(x); ay = Math.abs(y); az = Math.abs(z);
@@ -785,7 +870,7 @@ function tpCanvasRenderer(canvas, options) {
                     p10 = (iy * buffer.width + ix1) * 4;
                     p01 = (iy1 * buffer.width + ix) * 4;
                     p11 = (iy1 * buffer.width + ix1) * 4;
-                    alpha = ((buffer.data[p00 + 3] * (1 - fx) + buffer.data[p10 + 3] * fx) * (1 - fy) + (buffer.data[p01 + 3] * (1 - fx) + buffer.data[p11 + 3] * fx) * fy) / 255;
+                    alpha = buffer.opaque ? 1 : ((buffer.data[p00 + 3] * (1 - fx) + buffer.data[p10 + 3] * fx) * (1 - fy) + (buffer.data[p01 + 3] * (1 - fx) + buffer.data[p11 + 3] * fx) * fy) / 255;
                     for (channel = 0; channel < 3; channel++) {
                         value = (buffer.data[p00 + channel] * (1 - fx) + buffer.data[p10 + channel] * fx) * (1 - fy) + (buffer.data[p01 + channel] * (1 - fx) + buffer.data[p11 + channel] * fx) * fy;
                         data[index + channel] = value * alpha + bg[channel] * (1 - alpha);
@@ -802,7 +887,7 @@ function tpCanvasRenderer(canvas, options) {
             tileGeneration++;
             clearTiles(state && state.multi);
             buffers = [];
-            state = output = levelColumns = null;
+            state = output = levelColumns = cameraRays = cameraRayKey = null;
             work.width = work.height = 1;
         },
         setInvalidate: function (callback) { invalidate = typeof callback === 'function' ? callback : function () {}; }

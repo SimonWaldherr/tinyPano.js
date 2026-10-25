@@ -1,7 +1,8 @@
 export type ImageSource = string | Blob | HTMLImageElement | HTMLCanvasElement | HTMLVideoElement | ImageBitmap;
 export interface MultiResLevel { width: number; height: number; url?: string; urlTemplate?: string; tileSize?: number; z?: string | number }
 export interface MultiResTiles { tileSize?: number; levels: MultiResLevel[] }
-export interface View { yaw: number; pitch: number; hfov: number }
+export type ViewMode = 'normal' | 'tinyplanet' | 'tunnel' | 'fisheye';
+export interface View { yaw: number; pitch: number; hfov: number; viewMode?: ViewMode }
 export interface ViewState extends View { sceneId: string | null }
 export interface ViewerStrings {
     zoomIn: string; zoomOut: string; fullscreen: string; loadPanorama: string; loading: string;
@@ -16,6 +17,7 @@ export interface RenderEvent extends LoadEvent { preview: boolean }
 export interface PreloadEvent { sceneId: string; requestId: number; cached?: boolean }
 export interface GyroscopeEvent { enabled: boolean }
 export interface AutoRotateEvent { enabled: boolean; speed: number }
+export interface ViewModeEvent { viewMode: ViewMode }
 export interface LanguageEvent { language: 'en' | 'de' }
 export interface ViewerError extends Error { code: string; sceneId: string | null; requestId: number }
 export interface HotSpot {
@@ -26,6 +28,8 @@ export interface HotSpot {
     clickHandlerFunc?: (event: MouseEvent, args?: unknown) => void; clickHandlerArgs?: unknown;
 }
 export interface Config {
+    /** Camera display style, independent of the source image projection. Defaults to normal. */
+    viewMode?: ViewMode;
     type?: 'equirectangular' | 'cubemap' | 'cylindrical' | 'rectilinear' | 'multires'; panorama?: ImageSource; cubeMap?: ImageSource[];
     /** Equirectangular tile pyramid. URL templates use {z}, {x}, and {y}; {x} and {y} are required. */
     tiles?: MultiResTiles; maxTileCache?: number;
@@ -71,6 +75,7 @@ export interface Viewer {
     on(name: 'render', callback: (event: RenderEvent) => void): this;
     on(name: 'gyroscopechange', callback: (event: GyroscopeEvent) => void): this;
     on(name: 'autorotatechange', callback: (event: AutoRotateEvent) => void): this;
+    on(name: 'viewmodechange', callback: (event: ViewModeEvent) => void): this;
     on(name: 'languagechange', callback: (event: LanguageEvent) => void): this;
     on(name: 'error', callback: (error: ViewerError) => void): this;
     on(name: 'viewchange', callback: (view: View) => void): this;
@@ -83,6 +88,9 @@ export interface Viewer {
     getScene(): string | null; getContainer(): HTMLElement;
     getViewState(): ViewState; setViewState(state: Partial<ViewState>, duration?: number): this;
     getViewURL(url?: string): string; loadViewURL(url?: string): this;
+    getViewMode(): ViewMode;
+    /** Switch display style and its starting view without loading the image again; normal restores the previous camera. */
+    setViewMode(mode: ViewMode): this;
     getLanguage(): 'en' | 'de';
     /** Update viewer controls and built-in labels without reloading the image or resetting the view. */
     setLanguage(language: string, strings?: Partial<ViewerStrings>): this;

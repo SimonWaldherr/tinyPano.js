@@ -141,8 +141,14 @@ function tpLocaleStrings(language) {
     }
     return strings;
 }
+var viewModes = {
+    normal: { pitch: 0, hfov: 100, maxHfov: 120, limit: 175 },
+    tinyplanet: { pitch: -90, hfov: 270, maxHfov: 330, limit: 350 },
+    tunnel: { pitch: 90, hfov: 270, maxHfov: 330, limit: 350 },
+    fisheye: { pitch: 0, hfov: 180, maxHfov: 240, limit: 300 }
+};
 var defaults = {
-    type: 'equirectangular', yaw: 0, pitch: 0, hfov: 100,
+    viewMode: 'normal', type: 'equirectangular', yaw: 0, pitch: 0, hfov: 100,
     minHfov: 30, maxHfov: 120, minPitch: -90, maxPitch: 90,
     minYaw: -180, maxYaw: 180, autoLoad: true, autoRotate: 0,
     showControls: true, showZoomCtrl: true, showFullscreenCtrl: true, showGyroscopeCtrl: false,
@@ -274,8 +280,15 @@ Viewer.prototype._button = function (label, text, action) {
 };
 Viewer.prototype._resolveConfig = function (scene) {
     var c = extend({}, defaults, this.base.default, this.base, scene);
-    c.minHfov = clamp(finite(c.minHfov, 30), 1, 170);
-    c.maxHfov = clamp(finite(c.maxHfov, 120), c.minHfov, 175);
+    var explicit = extend({}, this.base.default, this.base, scene);
+    c.viewMode = this.viewModeOverride || (typeof c.viewMode === 'string' && own.call(viewModes, c.viewMode) ? c.viewMode : 'normal');
+    var preset = viewModes[c.viewMode];
+    c.minHfov = clamp(finite(explicit.minHfov, 30), 1, c.viewMode === 'normal' ? 170 : preset.limit);
+    c.maxHfov = clamp(finite(explicit.maxHfov, preset.maxHfov), c.minHfov, preset.limit);
+    if (c.viewMode !== 'normal') {
+        c.pitch = this.viewModeOverride ? preset.pitch : finite(explicit.pitch, preset.pitch);
+        c.hfov = this.viewModeOverride ? preset.hfov : finite(explicit.hfov, preset.hfov);
+    }
     c.minPitch = clamp(finite(c.minPitch, -90), -90, 90);
     c.maxPitch = clamp(finite(c.maxPitch, 90), c.minPitch, 90);
     c.minYaw = finite(c.minYaw, -180); c.maxYaw = Math.max(c.minYaw, finite(c.maxYaw, 180));
@@ -333,6 +346,8 @@ Viewer.prototype._configure = function (scene, resolved) {
     var self = this;
     var c = this.config = resolved ? scene : this._resolveConfig(scene);
     this.compassAngle = this.compassLabel = null;
+    this.view.viewMode = c.viewMode;
+    this.root.setAttribute('data-view-mode', c.viewMode);
     this.view.yaw = finite(c.yaw, 0); this.view.pitch = finite(c.pitch, 0); this.view.hfov = finite(c.hfov, 100);
     this._limit();
     this.gyroReference = null;
@@ -388,6 +403,41 @@ Viewer.prototype.setLanguage = function (language, strings) {
     this._emit('languagechange', { language: c.language });
     return this;
 };
+Viewer.prototype.getViewMode = function () { return this.view.viewMode || 'normal'; };
+Viewer.prototype.setViewMode = function (mode) {
+    if (this.dead) return this;
+    if (typeof mode !== 'string' || !own.call(viewModes, mode)) { this._error(this._makeError('VIEW_INVALID', this.config)); return this; }
+    var changed = mode !== this.getViewMode();
+    this.viewModeOverride = mode;
+    if (!changed && (!this.requested || this.requested.config.viewMode === mode)) return this;
+    if (changed) {
+        if (this.getViewMode() === 'normal') this.normalView = { scene: this.scene, pitch: this.view.pitch, yaw: this.view.yaw, hfov: this.view.hfov };
+        this._interact();
+        if (this.dead) return this;
+        var resolved = this._resolveConfig(this.scenes[this.scene]);
+        this.config.viewMode = this.view.viewMode = mode;
+        this.config.minHfov = resolved.minHfov; this.config.maxHfov = resolved.maxHfov;
+        var saved = mode === 'normal' && this.normalView && this.normalView.scene === this.scene ? this.normalView : null;
+        this.view.pitch = saved ? saved.pitch : mode === 'normal' ? finite(resolved.pitch, 0) : viewModes[mode].pitch;
+        this.view.hfov = saved ? saved.hfov : mode === 'normal' ? finite(resolved.hfov, 100) : viewModes[mode].hfov;
+        if (saved) this.view.yaw = saved.yaw;
+    }
+    if (this.requested) {
+        var pending = this.requested.config;
+        var next = this._resolveConfig(this.scenes[this.requested.sceneId]);
+        pending.viewMode = mode; pending.minHfov = next.minHfov; pending.maxHfov = next.maxHfov;
+        var sameScene = this.requested.sceneId === this.scene;
+        pending.pitch = sameScene ? this.view.pitch : finite(next.pitch, viewModes[mode].pitch);
+        pending.hfov = sameScene ? this.view.hfov : finite(next.hfov, viewModes[mode].hfov);
+        this.requested.viewOverrides = extend({}, this.requested.viewOverrides, { pitch: pending.pitch, hfov: pending.hfov });
+    }
+    if (changed) {
+        this.root.setAttribute('data-view-mode', mode);
+        this._limit(); this._request();
+        this._emit('viewmodechange', { viewMode: mode });
+    }
+    return this;
+};
 Viewer.prototype._limit = function () {
     var v = this.view, c = this.config;
     v.pitch = clamp(v.pitch, c.minPitch, c.maxPitch);
@@ -441,22 +491,27 @@ Viewer.prototype._captureZoomAnchor = function (clientX, clientY, allowOutside, 
     if (!rect.width || !rect.height || !isFinite(clientX) || !isFinite(clientY) ||
         (!allowOutside && (clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom))) return null;
     var coords = this._mouseEventToCoords({ clientX: clientX, clientY: clientY }, rect);
+    if (!isFinite(coords[0]) || !isFinite(coords[1])) return null;
     return { x: 2 * (clientX - rect.left) / rect.width - 1, y: 1 - 2 * (clientY - rect.top) / rect.height,
         pitch: coords[0], yaw: coords[1] };
 };
 Viewer.prototype._applyZoomAnchor = function (anchor) {
-    var tangent = Math.tan(this.view.hfov * RAD / 2);
-    var x = anchor.x * tangent, y = anchor.y * tangent * this.height / this.width;
+    var lens = tpCameraMode(this.getViewMode()), scale = tpCameraScale(this.view.hfov, lens), ray = [0, 0, 1];
+    if (!tpLensRay(anchor.x * scale, anchor.y * scale * this.height / this.width, lens, ray)) return;
     var roll = (this.config.horizonCorrection || 0) * RAD, cr = Math.cos(roll), sr = Math.sin(roll);
-    var rx = x * cr + y * sr, ry = -x * sr + y * cr;
-    var length = Math.sqrt(rx * rx + ry * ry + 1), offset = Math.atan2(ry, 1);
-    var sine = clamp(Math.sin(anchor.pitch * RAD) * length / Math.sqrt(1 + ry * ry), -1, 1);
-    var pitch = Math.asin(sine) - offset;
-    var other = (sine >= 0 ? Math.PI : -Math.PI) - Math.asin(sine) - offset;
-    var current = this.view.pitch * RAD;
-    if (other >= -Math.PI / 2 && other <= Math.PI / 2 && Math.abs(other - current) < Math.abs(pitch - current)) pitch = other;
-    pitch = clamp(pitch / RAD, this.config.minPitch, this.config.maxPitch) * RAD;
-    var z = Math.cos(pitch) - ry * Math.sin(pitch);
+    var rx = ray[0] * cr + ray[1] * sr, ry = -ray[0] * sr + ray[1] * cr, rz = ray[2];
+    var length = Math.sqrt(rx * rx + ry * ry + rz * rz), vertical = Math.sqrt(ry * ry + rz * rz);
+    if (vertical < 0.0000001) return;
+    var sine = clamp(Math.sin(anchor.pitch * RAD) * length / vertical, -1, 1);
+    var offset = Math.atan2(ry, rz), solution = Math.asin(sine), current = this.view.pitch * RAD;
+    var best = null, distance = Infinity;
+    for (var branch = 0; branch < 2; branch++) for (var turn = -1; turn <= 1; turn++) {
+        var candidate = (branch ? Math.PI - solution : solution) - offset + turn * Math.PI * 2;
+        if (candidate < -Math.PI / 2 - 0.0000001 || candidate > Math.PI / 2 + 0.0000001) continue;
+        if (Math.abs(candidate - current) < distance) { best = candidate; distance = Math.abs(candidate - current); }
+    }
+    var pitch = clamp((best === null ? current : best) / RAD, this.config.minPitch, this.config.maxPitch) * RAD;
+    var z = rz * Math.cos(pitch) - ry * Math.sin(pitch);
     this.view.pitch = pitch / RAD;
     this.view.yaw = anchor.yaw - Math.atan2(rx, z) / RAD;
 };
@@ -971,6 +1026,7 @@ Viewer.prototype._load = function (request, announce) {
                         if (xml && c.type === 'equirectangular') {
                             var explicit = extend({}, self.base.default, self.base,
                                 info.sceneId !== null ? self.scenes[info.sceneId] : null, request.viewOverrides);
+                            if (c.viewMode !== 'normal') { explicit.pitch = c.pitch; explicit.hfov = c.hfov; }
                             tpApplyGPano(c, xml, explicit, self.width / Math.max(1, self.height));
                             c.haov = clamp(finite(c.haov, 360), 0.001, 360);
                             c.vaov = clamp(finite(c.vaov, 180), 0.001, 180);
@@ -1216,7 +1272,8 @@ Viewer.prototype._bindInput = function () {
             var anchor = self._captureZoomAnchor(last.x, last.y, true, rect);
             var oldYaw = self.view.yaw, oldPitch = self.view.pitch;
             if (next.distance && last.distance) {
-                self.view.hfov = clamp(2 * Math.atan(Math.tan(self.view.hfov * RAD / 2) * last.distance / next.distance) / RAD,
+                var lens = tpCameraMode(self.getViewMode());
+                self.view.hfov = clamp(tpCameraFov(tpCameraScale(self.view.hfov, lens) * last.distance / next.distance, lens),
                     self.config.minHfov, self.config.maxHfov);
             }
             if (anchor) {
@@ -1358,7 +1415,9 @@ Viewer.prototype.setNorthOffset = function (offset) {
 };
 Viewer.prototype.getScene = function () { return this.scene; };
 Viewer.prototype.getViewState = function () {
-    return { sceneId: this.scene, yaw: this.view.yaw, pitch: this.view.pitch, hfov: this.view.hfov };
+    var state = { sceneId: this.scene, yaw: this.view.yaw, pitch: this.view.pitch, hfov: this.view.hfov };
+    if (this.getViewMode() !== 'normal') state.viewMode = this.getViewMode();
+    return state;
 };
 Viewer.prototype.setViewState = function (state, duration) {
     if (this.dead) return this;
@@ -1372,6 +1431,8 @@ Viewer.prototype.setViewState = function (state, duration) {
             if (typeof value !== 'number' || !isFinite(value)) valid = false;
         }
     }
+    var hasMode = valid && own.call(state, 'viewMode') && state.viewMode !== undefined;
+    if (hasMode) { count++; if (typeof state.viewMode !== 'string' || !own.call(viewModes, state.viewMode)) valid = false; }
     var hasScene = valid && own.call(state, 'sceneId') && state.sceneId !== undefined;
     if (hasScene) {
         count++;
@@ -1384,6 +1445,8 @@ Viewer.prototype.setViewState = function (state, duration) {
     if (scene !== null && !own.call(this.scenes, scene)) {
         this._error(this._makeError('SCENE_UNKNOWN', this.config, scene, scene)); return this;
     }
+    if (hasMode) this.setViewMode(state.viewMode);
+    if (this.dead) return this;
     if (this.loaded && !this.loading && scene === this.scene) return this.lookAt(values.pitch, values.yaw, values.hfov, duration);
     this._interact();
     if (this.dead) return this;
@@ -1408,6 +1471,8 @@ Viewer.prototype.loadViewURL = function (url) {
     var state;
     try { state = JSON.parse(decodeURIComponent(fragment.slice(3))); }
     catch (_) { this._error(this._makeError('VIEW_INVALID', this.config)); return this; }
+    if (state && typeof state === 'object' && !own.call(state, 'viewMode') &&
+        (own.call(state, 'sceneId') || own.call(state, 'yaw') || own.call(state, 'pitch') || own.call(state, 'hfov'))) state.viewMode = 'normal';
     return this.setViewState(state);
 };
 Viewer.prototype.getContainer = function () { return this.host; };
@@ -1656,7 +1721,8 @@ Viewer.prototype._projectHotspots = function () {
     var cy = Math.cos(this.view.yaw * RAD), sy = Math.sin(this.view.yaw * RAD);
     var cp = Math.cos(this.view.pitch * RAD), sp = Math.sin(this.view.pitch * RAD);
     var roll = (this.config.horizonCorrection || 0) * RAD, cr = Math.cos(roll), sr = Math.sin(roll);
-    var focal = this.width / (2 * Math.tan(this.view.hfov * RAD / 2));
+    var lens = tpCameraMode(this.getViewMode());
+    var focal = this.width / (2 * tpCameraScale(this.view.hfov, lens));
     for (var i = 0; i < this.hotspots.length; i++) {
         var s = this.hotspots[i], pitch = finite(s.pitch, 0), yaw = finite(s.yaw, 0);
         if (s._projectionPitch !== pitch || s._projectionYaw !== yaw) this._cacheHotspotVector(s);
@@ -1664,8 +1730,16 @@ Viewer.prototype._projectHotspots = function () {
         var xx = x * cy - z * sy, zz = x * sy + z * cy;
         var yy = wy * cp - zz * sp, depth = wy * sp + zz * cp;
         var rolledX = xx * cr - yy * sr, rolledY = xx * sr + yy * cr;
-        var sx = this.width / 2 + focal * rolledX / depth, syy = this.height / 2 - focal * rolledY / depth;
-        var visible = depth > 0.001 && sx >= 0 && sx <= this.width && syy >= 0 && syy <= this.height;
+        var divisor = depth, valid = depth > 0.001;
+        if (lens === 1) { divisor = 1 + depth; valid = divisor > 0.000001; }
+        else if (lens === 2) {
+            var radius = Math.sqrt(rolledX * rolledX + rolledY * rolledY);
+            var angle = Math.atan2(radius, depth);
+            divisor = angle > 0.000001 ? radius / angle : 1;
+            valid = radius > 0.000001 || depth > 0;
+        }
+        var sx = this.width / 2 + focal * rolledX / divisor, syy = this.height / 2 - focal * rolledY / divisor;
+        var visible = valid && sx >= 0 && sx <= this.width && syy >= 0 && syy <= this.height;
         if (s._visible !== visible) {
             s._visible = visible;
             s.el.style.visibility = visible ? 'visible' : 'hidden';
@@ -1686,14 +1760,16 @@ Viewer.prototype.mouseEventToCoords = function (e) {
     return this._mouseEventToCoords(e, this.root.getBoundingClientRect());
 };
 Viewer.prototype._mouseEventToCoords = function (e, r) {
-    var f = this.width / (2 * Math.tan(this.view.hfov * RAD / 2));
-    var x = (e.clientX - r.left - r.width / 2) * this.width / r.width / f;
-    var y = -(e.clientY - r.top - r.height / 2) * this.height / r.height / f;
+    var lens = tpCameraMode(this.getViewMode()), scale = tpCameraScale(this.view.hfov, lens), ray = [0, 0, 1];
+    var x = (2 * (e.clientX - r.left) / r.width - 1) * scale;
+    var y = (1 - 2 * (e.clientY - r.top) / r.height) * scale * this.height / this.width;
+    if (!tpLensRay(x, y, lens, ray)) return [NaN, NaN];
+    x = ray[0]; y = ray[1]; var rz = ray[2];
     var roll = (this.config.horizonCorrection || 0) * RAD, cr = Math.cos(roll), sr = Math.sin(roll);
     var rolledX = x * cr + y * sr;
     y = -x * sr + y * cr; x = rolledX;
     var p = this.view.pitch * RAD, a = this.view.yaw * RAD;
-    var yy = y * Math.cos(p) + Math.sin(p), z = Math.cos(p) - y * Math.sin(p);
+    var yy = y * Math.cos(p) + rz * Math.sin(p), z = rz * Math.cos(p) - y * Math.sin(p);
     var xx = x * Math.cos(a) + z * Math.sin(a), zz = z * Math.cos(a) - x * Math.sin(a);
     return [Math.atan2(yy, Math.sqrt(xx * xx + zz * zz)) / RAD, wrap(Math.atan2(xx, zz) / RAD)];
 };
@@ -1730,7 +1806,7 @@ Viewer.prototype.destroy = function () {
     this.gyroscopeButton = null;
     this.zoomInButton = this.zoomOutButton = null;
     this.base = this.config = {}; this.scenes = Object.create(null); this.textureStats = null;
-    this.displayError = this.stringOverrides = null;
+    this.displayError = this.stringOverrides = this.normalView = null;
     this.preloadCache = Object.create(null); this.preloadRequests = Object.create(null); this.preloadOrder = [];
     this.renderer = null; this.canvas = null;
 };

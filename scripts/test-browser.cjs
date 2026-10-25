@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { chromium } = require('playwright');
 const tests = require('../tests/browser-tests.cjs');
+const modes = require('../tests/view-modes.test-browser.cjs');
 const zoom = require('../tests/zoom.test-browser.cjs');
 const commons = require('../tests/commons.test-browser.cjs');
 const memoryAndI18n = require('../tests/memory-i18n.test-browser.cjs');
@@ -37,7 +38,7 @@ function serve(request, response) {
 
 async function main() {
   const filter = process.env.TEST_FILTER ? new RegExp(process.env.TEST_FILTER, 'i') : null;
-  const selected = tests.cases.concat(memoryAndI18n.cases, commons.cases, zoom.cases).filter(test => !filter || filter.test(test.name));
+  const selected = tests.cases.concat(memoryAndI18n.cases, commons.cases, zoom.cases, modes.cases).filter(test => !filter || filter.test(test.name));
   if (!selected.length) throw new Error('No browser tests match TEST_FILTER.');
   const server = http.createServer(serve);
   await new Promise((resolve, reject) => {

@@ -40,6 +40,11 @@ Use a 2:1 equirectangular image for a full 360° panorama. Drag to look around;
 scroll or pinch to zoom. The container needs an explicit height.
 Images from other domains need CORS permission.
 
+Choose **Panorama**, **Tiny Planet**, **Tunnel** or **Fisheye** in the demo’s View
+menu. For embedding, use `viewMode: 'tinyplanet'` or
+`pano.setViewMode('fisheye')`. Switching back to `'normal'` restores the previous
+camera. Shared view links include the display style.
+
 The viewer also supports scene links, hotspots, cubemaps and other projections.
 See [the API declarations](src/tinyPano.d.ts) for options and methods.
 For bundlers, import `{ viewer }` from `tinypano` and load `tinypano/style.css`.
@@ -83,7 +88,9 @@ Run `npm run bench:zoom -- --baseline <commit> --runs 5` to compare zoom respons
 and rendering with an earlier commit. Omit `--baseline` to measure the current
 sources only; `--software` uses SwiftShader. Use `--scenario render` or
 `--scenario render-tilted` to compare identical camera paths across versions.
-Results are saved under `test-results/`.
+Use `--view-mode fisheye --scenario pan` for rotation, or `--baseline-dir <copy>`
+to compare uncommitted sources (the copy must contain `src/`). Results are saved
+under `test-results/`.
 
 `dist/` is generated and ignored by Git. GitHub Actions checks the build on
 Node.js 24 using the runner's Chrome. Successful `main` builds deploy to GitHub Pages.
